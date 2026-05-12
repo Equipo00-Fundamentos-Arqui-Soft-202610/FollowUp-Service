@@ -23,7 +23,9 @@ builder.Services.AddDbContext<FollowUpDbContext>(options =>
 // Dependency Injection for DDD layers
 builder.Services.AddScoped<IMedicationRepository, MedicationRepository>();
 builder.Services.AddScoped<IMedicationQueryService, MedicationQueryService>();
+builder.Services.AddScoped<INextPendingDoseQueryService, NextPendingDoseQueryService>();
 builder.Services.AddScoped<MedicationResourceFromEntityAssembler>();
+builder.Services.AddScoped<NextPendingDoseResourceFromEntityAssembler>();
 builder.Services.AddScoped<IMedicationComplianceRepository, MedicationComplianceRepository>();
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();

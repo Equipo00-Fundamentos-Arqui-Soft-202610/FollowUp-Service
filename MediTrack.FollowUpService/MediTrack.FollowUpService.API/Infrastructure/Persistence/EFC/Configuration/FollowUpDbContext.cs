@@ -10,7 +10,7 @@ public class FollowUpDbContext : DbContext
 
     public DbSet<Medication> Medications { get; set; } = null!;
     public DbSet<DoseSchedule> DoseSchedules { get; set; } = null!;
-
+    public DbSet<MedicationCompliance> MedicationCompliances { get; set; } = null!;
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -80,5 +80,48 @@ public class FollowUpDbContext : DbContext
                 .HasColumnName("is_active")
                 .HasDefaultValue(true);
         });
+        
+        modelBuilder.Entity<MedicationCompliance>(entity =>
+        {
+            entity.ToTable("medication_compliances");
+            entity.HasKey(e => e.Id);
+    
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+    
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+    
+            entity.Property(e => e.DoseScheduleId)
+                .HasColumnName("dose_schedule_id")
+                .IsRequired();
+    
+            entity.Property(e => e.Status)
+                .HasColumnName("status")
+                .HasMaxLength(50)
+                .IsRequired();
+    
+            entity.Property(e => e.RecordedAt)
+                .HasColumnName("recorded_at")
+                .IsRequired();
+    
+            entity.Property(e => e.VideoUrl)
+                .HasColumnName("video_url");
+    
+            entity.Property(e => e.Synced)
+                .HasColumnName("synced")
+                .HasDefaultValue(true);
+    
+            entity.Property(e => e.OfflineRecordedAt)
+                .HasColumnName("offline_recorded_at");
+
+            entity.HasOne(e => e.DoseSchedule)
+                .WithMany()
+                .HasForeignKey(e => e.DoseScheduleId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+        
     }
 }

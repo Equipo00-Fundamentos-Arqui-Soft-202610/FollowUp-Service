@@ -1,14 +1,37 @@
-namespace DefaultNamespace;
+namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
 
 public class Medication
 {
     public int Id { get; set; }
     public int PatientId { get; set; }
-    public string Name { get; set; }
-    public string Dose { get; set; }
+    public string Name { get; set; } = null!;
+    public string Dose { get; set; } = null!;
     public int FrequencyHours { get; set; }
     public DateTime StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public int StockCount { get; set; }
     public List<DoseSchedule> Schedules { get; set; } = new();
+
+    public Medication() { }
+
+    public Medication(int patientId, string name, string dose, int frequencyHours, 
+        DateTime startDate, int stockCount)
+    {
+        PatientId = patientId;
+        Name = name;
+        Dose = dose;
+        FrequencyHours = frequencyHours;
+        StartDate = startDate;
+        StockCount = stockCount;
+    }
+
+    public void UpdateStockCount(int newCount)
+    {
+        if (newCount < 0)
+            throw new ArgumentException("Stock count cannot be negative");
+        StockCount = newCount;
+    }
+
+    public bool IsActive => EndDate == null || EndDate > DateTime.Now;
 }

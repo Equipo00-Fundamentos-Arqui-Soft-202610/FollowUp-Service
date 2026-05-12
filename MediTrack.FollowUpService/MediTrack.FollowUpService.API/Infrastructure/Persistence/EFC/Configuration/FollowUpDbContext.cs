@@ -1,7 +1,8 @@
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace MediTrack.FollowUpService.API.Infrastructure.Persistence;
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 
 public class FollowUpDbContext : DbContext
 {

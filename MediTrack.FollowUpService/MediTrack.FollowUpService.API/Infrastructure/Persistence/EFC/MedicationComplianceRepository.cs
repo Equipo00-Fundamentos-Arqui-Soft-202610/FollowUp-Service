@@ -1,5 +1,6 @@
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using Microsoft.EntityFrameworkCore;
 
 namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;

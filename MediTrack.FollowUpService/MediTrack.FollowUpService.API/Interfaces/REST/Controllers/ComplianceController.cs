@@ -11,15 +11,18 @@ namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
 public class ComplianceController : ControllerBase
 {
     private readonly IMedicationComplianceCommandService _complianceCommandService;
+    private readonly IMedicationComplianceRepository _complianceRepository;
     private readonly RecordComplianceCommandFromResourceAssembler _commandAssembler;
     private readonly MedicationComplianceResourceFromEntityAssembler _responseAssembler;
 
     public ComplianceController(
         IMedicationComplianceCommandService complianceCommandService,
+        IMedicationComplianceRepository complianceRepository,
         RecordComplianceCommandFromResourceAssembler commandAssembler,
         MedicationComplianceResourceFromEntityAssembler responseAssembler)
     {
         _complianceCommandService = complianceCommandService;
+        _complianceRepository = complianceRepository;
         _commandAssembler = commandAssembler;
         _responseAssembler = responseAssembler;
     }
@@ -49,8 +52,14 @@ public class ComplianceController : ControllerBase
     [HttpGet("{id}")]
     public async Task<ActionResult<MedicationComplianceResource>> GetComplianceById(int id)
     {
-        // This endpoint is referenced by CreatedAtAction above
-        // You can implement it for completeness
-        return Ok();
+        var compliance = await _complianceRepository.FindByIdAsync(id);
+        
+        if (compliance == null)
+        {
+            return NotFound(new { message = $"Compliance record with id {id} not found" });
+        }
+
+        var responseResource = _responseAssembler.ToResource(compliance);
+        return Ok(responseResource);
     }
 }

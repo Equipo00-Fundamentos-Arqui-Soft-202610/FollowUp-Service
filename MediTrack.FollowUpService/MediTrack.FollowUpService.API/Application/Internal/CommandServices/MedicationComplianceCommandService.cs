@@ -2,6 +2,7 @@ using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
 using MediTrack.FollowUpService.API.Domain.Model.Commands;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using Microsoft.EntityFrameworkCore;
 
 namespace MediTrack.FollowUpService.API.Application.Internal.CommandServices;

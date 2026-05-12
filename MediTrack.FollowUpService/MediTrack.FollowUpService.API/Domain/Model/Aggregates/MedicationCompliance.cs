@@ -1,3 +1,5 @@
+using MediTrack.FollowUpService.API.Domain.Models;
+
 namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
 
 public class MedicationCompliance

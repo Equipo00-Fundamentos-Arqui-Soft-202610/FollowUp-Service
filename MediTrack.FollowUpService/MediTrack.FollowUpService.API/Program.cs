@@ -3,6 +3,7 @@ using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.EntityFrameworkCore;
 

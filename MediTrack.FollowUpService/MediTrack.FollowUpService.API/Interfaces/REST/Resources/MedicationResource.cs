@@ -2,7 +2,7 @@ namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
 
 public record DoseScheduleResource(
     int Id,
-    TimeOnly ScheduledTime,
+    TimeSpan ScheduledTime,
     bool IsActive
 );
 

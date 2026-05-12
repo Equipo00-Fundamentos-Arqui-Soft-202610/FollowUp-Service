@@ -1,7 +1,9 @@
+using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,7 +24,10 @@ builder.Services.AddDbContext<FollowUpDbContext>(options =>
 builder.Services.AddScoped<IMedicationRepository, MedicationRepository>();
 builder.Services.AddScoped<IMedicationQueryService, MedicationQueryService>();
 builder.Services.AddScoped<MedicationResourceFromEntityAssembler>();
-
+builder.Services.AddScoped<IMedicationComplianceRepository, MedicationComplianceRepository>();
+builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
+builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
+builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

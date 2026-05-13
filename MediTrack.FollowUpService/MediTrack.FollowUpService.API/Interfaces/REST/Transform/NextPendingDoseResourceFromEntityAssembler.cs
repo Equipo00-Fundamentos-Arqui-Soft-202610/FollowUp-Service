@@ -8,7 +8,7 @@ public class NextPendingDoseResourceFromEntityAssembler
     public NextPendingDoseResource ToResource(MedicationCompliance compliance)
     {
         var medication = compliance.DoseSchedule.Medication;
-        var scheduledTime = compliance.DoseSchedule.ScheduledTime;
+        var scheduledTime = compliance.DoseSchedule.ScheduledTime.Value;
     
        
         var limaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time");
@@ -29,7 +29,7 @@ public class NextPendingDoseResourceFromEntityAssembler
 
         return new NextPendingDoseResource(
             MedicationName: medication.Name,
-            Dose: medication.Dose,
+            Dose: medication.Dose.Value,
             ScheduledTime: scheduledTime.ToString(@"hh\:mm"),
             MinutesUntilDose: minutesUntilDose
         );

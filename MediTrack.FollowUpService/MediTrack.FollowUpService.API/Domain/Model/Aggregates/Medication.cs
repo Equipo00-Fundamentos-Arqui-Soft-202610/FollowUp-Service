@@ -1,3 +1,4 @@
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
 using MediTrack.FollowUpService.API.Domain.Models;
 
 namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
@@ -8,7 +9,7 @@ public class Medication
     public int Id { get; set; }
     public int PatientId { get; set; }
     public string Name { get; set; } = null!;
-    public string Dose { get; set; } = null!;
+    public DoseValue Dose { get; set; } = null!;
     public int FrequencyHours { get; set; }
     public DateTime StartDate { get; set; }
     public DateTime? EndDate { get; set; }
@@ -22,7 +23,7 @@ public class Medication
     {
         PatientId = patientId;
         Name = name;
-        Dose = dose;
+        Dose = new DoseValue(dose);
         FrequencyHours = frequencyHours;
         StartDate = startDate;
         StockCount = stockCount;

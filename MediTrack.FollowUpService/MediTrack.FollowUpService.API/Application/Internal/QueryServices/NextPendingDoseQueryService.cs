@@ -56,11 +56,11 @@ public class NextPendingDoseQueryService : INextPendingDoseQueryService
             .Where(s =>
             {
                 var hasTakenCompliance = todayCompliances.Any(c =>
-                    c.DoseScheduleId == s.Id && c.Status == "taken");
+                    c.DoseScheduleId == s.Id && c.Status.IsTaken);
                 return !hasTakenCompliance;
             })
-            .OrderBy(s => s.ScheduledTime > now.TimeOfDay ? 0 : 1) 
-            .ThenBy(s => s.ScheduledTime)
+            .OrderBy(s => s.ScheduledTime.Value > now.TimeOfDay ? 0 : 1) 
+            .ThenBy(s => s.ScheduledTime.Value)
             .FirstOrDefault();
 
         if (nextPendingSchedule == null)

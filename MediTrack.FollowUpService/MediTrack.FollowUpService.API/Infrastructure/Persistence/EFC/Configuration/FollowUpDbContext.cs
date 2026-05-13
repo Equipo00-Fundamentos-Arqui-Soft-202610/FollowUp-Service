@@ -1,4 +1,5 @@
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
 using MediTrack.FollowUpService.API.Domain.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -37,7 +38,10 @@ public class FollowUpDbContext : DbContext
             entity.Property(e => e.Dose)
                 .HasColumnName("dose")
                 .HasMaxLength(100)
-                .IsRequired();
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => new DoseValue(v));
             
             entity.Property(e => e.FrequencyHours)
                 .HasColumnName("frequency_hour")
@@ -75,7 +79,10 @@ public class FollowUpDbContext : DbContext
             
             entity.Property(e => e.ScheduledTime)
                 .HasColumnName("scheduled_time")
-                .IsRequired();
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => new ScheduledHour(v));
             
             entity.Property(e => e.IsActive)
                 .HasColumnName("is_active")
@@ -102,7 +109,10 @@ public class FollowUpDbContext : DbContext
             entity.Property(e => e.Status)
                 .HasColumnName("status")
                 .HasMaxLength(50)
-                .IsRequired();
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => ComplianceStatus.From(v));
     
             entity.Property(e => e.RecordedAt)
                 .HasColumnName("recorded_at")

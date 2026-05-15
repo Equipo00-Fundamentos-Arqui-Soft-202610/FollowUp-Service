@@ -1,0 +1,15 @@
+﻿
+.idea/
+.idea\
+bin/
+obj/
+
+
+*.user
+*.userosscache
+*.sln.doccache
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/

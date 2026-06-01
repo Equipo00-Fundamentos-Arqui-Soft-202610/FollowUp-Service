@@ -12,19 +12,25 @@ public class MedicationsController : ControllerBase
 {
     private readonly IMedicationQueryService _medicationQueryService;
     private readonly INextPendingDoseQueryService _nextPendingDoseQueryService;
+    private readonly IAdherenceHistoryQueryService _adherenceHistoryQueryService;
     private readonly MedicationResourceFromEntityAssembler _medicationAssembler;
     private readonly NextPendingDoseResourceFromEntityAssembler _nextDoseAssembler;
+    private readonly AdherenceHistoryResourceFromEntityAssembler _adherenceHistoryAssembler;
 
     public MedicationsController(
         IMedicationQueryService medicationQueryService,
         INextPendingDoseQueryService nextPendingDoseQueryService,
+        IAdherenceHistoryQueryService adherenceHistoryQueryService,
         MedicationResourceFromEntityAssembler medicationAssembler,
-        NextPendingDoseResourceFromEntityAssembler nextDoseAssembler)
+        NextPendingDoseResourceFromEntityAssembler nextDoseAssembler,
+        AdherenceHistoryResourceFromEntityAssembler adherenceHistoryAssembler)
     {
         _medicationQueryService = medicationQueryService;
         _nextPendingDoseQueryService = nextPendingDoseQueryService;
+        _adherenceHistoryQueryService = adherenceHistoryQueryService;
         _medicationAssembler = medicationAssembler;
         _nextDoseAssembler = nextDoseAssembler;
+        _adherenceHistoryAssembler = adherenceHistoryAssembler;
     }
 
     [HttpGet]
@@ -61,6 +67,27 @@ public class MedicationsController : ControllerBase
                 return NotFound(new { message = $"No pending doses found for patient {patientId} today" });
 
             var resource = _nextDoseAssembler.ToResource(compliance);
+            return Ok(resource);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("adherence-history")]
+    public async Task<ActionResult<AdherenceHistoryResource>> GetAdherenceHistory(
+        [FromQuery] int patientId)
+    {
+        try
+        {
+            var query = new GetAdherenceHistoryQuery(patientId);
+            var adherenceHistory = await _adherenceHistoryQueryService.HandleAsync(query);
+
+            if (adherenceHistory == null)
+                return NotFound(new { message = $"No compliance records found for patient {patientId}" });
+
+            var resource = _adherenceHistoryAssembler.ToResource(adherenceHistory);
             return Ok(resource);
         }
         catch (ArgumentException ex)

@@ -28,6 +28,7 @@ public class NextPendingDoseResourceFromEntityAssembler
         }
 
         return new NextPendingDoseResource(
+            DoseScheduleId: compliance.DoseScheduleId,
             MedicationName: medication.Name,
             Dose: medication.Dose.Value,
             ScheduledTime: scheduledTime.ToString(@"hh\:mm"),

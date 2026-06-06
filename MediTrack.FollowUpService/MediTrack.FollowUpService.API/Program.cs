@@ -24,8 +24,12 @@ builder.Services.AddDbContext<FollowUpDbContext>(options =>
 builder.Services.AddScoped<IMedicationRepository, MedicationRepository>();
 builder.Services.AddScoped<IMedicationQueryService, MedicationQueryService>();
 builder.Services.AddScoped<INextPendingDoseQueryService, NextPendingDoseQueryService>();
+builder.Services.AddScoped<IAdherenceHistoryQueryService, AdherenceHistoryQueryService>();
+builder.Services.AddScoped<ILowStockMedicationQueryService, LowStockMedicationQueryService>();
 builder.Services.AddScoped<MedicationResourceFromEntityAssembler>();
 builder.Services.AddScoped<NextPendingDoseResourceFromEntityAssembler>();
+builder.Services.AddScoped<AdherenceHistoryResourceFromEntityAssembler>();
+builder.Services.AddScoped<LowStockMedicationResourceFromEntityAssembler>();
 builder.Services.AddScoped<IMedicationComplianceRepository, MedicationComplianceRepository>();
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();

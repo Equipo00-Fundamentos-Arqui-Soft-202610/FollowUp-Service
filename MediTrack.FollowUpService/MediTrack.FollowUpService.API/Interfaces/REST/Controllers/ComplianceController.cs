@@ -62,4 +62,28 @@ public class ComplianceController : ControllerBase
         var responseResource = _responseAssembler.ToResource(compliance);
         return Ok(responseResource);
     }
+    
+    [HttpGet("recent")]
+    public async Task<ActionResult<IEnumerable<MedicationComplianceResource>>> GetRecentCompliance(
+        [FromQuery] int patientId,
+        [FromQuery] int limit = 10)
+    {
+        if (patientId <= 0)
+            return BadRequest(new { message = "patientId must be greater than 0" });
+
+        if (limit <= 0)
+            limit = 10;
+
+        var compliances = await _complianceRepository.FindByPatientIdAsync(patientId);
+
+        var recentCompliances = compliances
+            .Take(limit)
+            .ToList();
+
+        if (!recentCompliances.Any())
+            return NotFound(new { message = $"No compliance records found for patient {patientId}" });
+
+        var resources = _responseAssembler.ToResources(recentCompliances);
+        return Ok(resources);
+    }
 }

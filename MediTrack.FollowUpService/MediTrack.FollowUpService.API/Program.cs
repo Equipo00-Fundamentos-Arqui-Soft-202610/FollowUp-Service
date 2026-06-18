@@ -1,6 +1,7 @@
 using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
@@ -34,6 +35,7 @@ builder.Services.AddScoped<IMedicationComplianceRepository, MedicationCompliance
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
+builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

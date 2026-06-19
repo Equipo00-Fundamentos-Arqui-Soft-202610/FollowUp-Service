@@ -26,7 +26,7 @@ public class FollowUpDbContext : DbContext
             
             entity.Property(e => e.Id)
                 .HasColumnName("id")
-                .ValueGeneratedOnAdd();
+                .ValueGeneratedNever();
             
             entity.Property(e => e.PatientId)
                 .HasColumnName("patient_id")
@@ -60,6 +60,10 @@ public class FollowUpDbContext : DbContext
                 .HasColumnName("stock_count")
                 .IsRequired();
 
+            entity.Property(e => e.StockAlertThreshold)
+                .HasColumnName("stock_alert_threshold")
+                .HasDefaultValue(0);
+
             entity.HasMany(e => e.Schedules)
                 .WithOne(s => s.Medication)
                 .HasForeignKey(s => s.MedicationId)
@@ -73,7 +77,7 @@ public class FollowUpDbContext : DbContext
             
             entity.Property(e => e.Id)
                 .HasColumnName("id")
-                .ValueGeneratedOnAdd();
+                .ValueGeneratedNever();
             
             entity.Property(e => e.MedicationId)
                 .HasColumnName("medication_id")

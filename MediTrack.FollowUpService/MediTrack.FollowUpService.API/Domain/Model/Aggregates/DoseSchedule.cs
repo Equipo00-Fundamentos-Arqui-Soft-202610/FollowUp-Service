@@ -19,4 +19,15 @@ public class DoseSchedule
         ScheduledTime = new ScheduledHour(scheduledTime);
         IsActive = isActive;
     }
+
+    public static DoseSchedule CreateFromEvent(int id, int medicationId, TimeSpan scheduledTime, bool isActive)
+    {
+        return new DoseSchedule
+        {
+            Id = id,
+            MedicationId = medicationId,
+            ScheduledTime = new ScheduledHour(scheduledTime),
+            IsActive = isActive
+        };
+    }
 }

@@ -14,6 +14,7 @@ public class Medication
     public DateTime StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public int StockCount { get; set; }
+    public int StockAlertThreshold { get; set; }
     public List<DoseSchedule> Schedules { get; set; } = new();
 
     public Medication() { }
@@ -37,4 +38,21 @@ public class Medication
     }
 
     public bool IsActive => EndDate == null || EndDate > DateTime.Now;
+
+    public static Medication CreateFromEvent(int id, int patientId, string name, string dose,
+        int frequencyHours, DateTime startDate, DateTime? endDate, int stockCount, int stockAlertThreshold)
+    {
+        return new Medication
+        {
+            Id = id,
+            PatientId = patientId,
+            Name = name,
+            Dose = new DoseValue(dose),
+            FrequencyHours = frequencyHours,
+            StartDate = startDate,
+            EndDate = endDate,
+            StockCount = stockCount,
+            StockAlertThreshold = stockAlertThreshold
+        };
+    }
 }

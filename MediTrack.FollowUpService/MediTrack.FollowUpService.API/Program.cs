@@ -1,4 +1,5 @@
 using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
@@ -42,6 +43,9 @@ builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComp
 builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
 builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueRepository>();
 builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
+builder.Services.AddScoped<IPrescriptionCreatedEventHandler, PrescriptionCreatedEventHandler>();
+builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
+builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

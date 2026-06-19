@@ -4,6 +4,7 @@ using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.EntityFrameworkCore;
@@ -36,6 +37,11 @@ builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationCompli
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
 builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
+builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
+builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
+builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueRepository>();
+builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

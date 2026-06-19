@@ -13,6 +13,8 @@ public class FollowUpDbContext : DbContext
     public DbSet<Medication> Medications { get; set; } = null!;
     public DbSet<DoseSchedule> DoseSchedules { get; set; } = null!;
     public DbSet<MedicationCompliance> MedicationCompliances { get; set; } = null!;
+    public DbSet<AppointmentCompliance> AppointmentCompliances { get; set; } = null!;
+    public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -132,6 +134,70 @@ public class FollowUpDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.DoseScheduleId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+        
+        modelBuilder.Entity<AppointmentCompliance>(entity =>
+        {
+            entity.ToTable("appointment_compliances");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.AppointmentId)
+                .HasColumnName("appointment_id")
+                .IsRequired();
+
+            entity.Property(e => e.Attended)
+                .HasColumnName("attended")
+                .IsRequired();
+
+            entity.Property(e => e.RecordedAt)
+                .HasColumnName("recorded_at")
+                .IsRequired();
+
+            entity.Property(e => e.Notes)
+                .HasColumnName("notes");
+        });
+
+        modelBuilder.Entity<OfflineSyncQueueItem>(entity =>
+        {
+            entity.ToTable("offline_sync_queue");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.EntityType)
+                .HasColumnName("entity_type")
+                .IsRequired();
+
+            entity.Property(e => e.Payload)
+                .HasColumnName("payload")
+                .HasColumnType("json")
+                .IsRequired();
+
+            entity.Property(e => e.QueuedAt)
+                .HasColumnName("queued_at")
+                .IsRequired();
+
+            entity.Property(e => e.SyncedAt)
+                .HasColumnName("synced_at");
+
+            entity.Property(e => e.Status)
+                .HasColumnName("status")
+                .HasMaxLength(50)
+                .HasDefaultValue("pending");
         });
         
     }

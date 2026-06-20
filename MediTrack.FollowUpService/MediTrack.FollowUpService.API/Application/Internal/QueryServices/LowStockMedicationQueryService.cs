@@ -6,8 +6,6 @@ namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 
 public class LowStockMedicationQueryService : ILowStockMedicationQueryService
 {
-    private const int LowStockThreshold = 5;
-
     private readonly IMedicationRepository _medicationRepository;
 
     public LowStockMedicationQueryService(IMedicationRepository medicationRepository)
@@ -23,7 +21,7 @@ public class LowStockMedicationQueryService : ILowStockMedicationQueryService
         var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
 
         return medications
-            .Where(medication => medication.IsActive && medication.StockCount <= LowStockThreshold)
+            .Where(medication => medication.IsActive && medication.StockCount <= medication.StockAlertThreshold)
             .ToList();
     }
 }

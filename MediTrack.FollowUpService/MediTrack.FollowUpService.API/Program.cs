@@ -44,7 +44,9 @@ builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentCompli
 builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueRepository>();
 builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
 builder.Services.AddScoped<IPrescriptionCreatedEventHandler, PrescriptionCreatedEventHandler>();
+builder.Services.AddScoped<IAppointmentScheduledEventHandler, AppointmentScheduledEventHandler>();
 builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
+builder.Services.AddHostedService<AppointmentScheduledConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
 var app = builder.Build();
 

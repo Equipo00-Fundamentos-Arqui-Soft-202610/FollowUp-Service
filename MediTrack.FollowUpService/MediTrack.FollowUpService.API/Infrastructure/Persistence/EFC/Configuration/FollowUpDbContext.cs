@@ -15,6 +15,7 @@ public class FollowUpDbContext : DbContext
     public DbSet<MedicationCompliance> MedicationCompliances { get; set; } = null!;
     public DbSet<AppointmentCompliance> AppointmentCompliances { get; set; } = null!;
     public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
+    public DbSet<AppointmentReference> AppointmentReferences { get; set; } = null!;
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -203,6 +204,15 @@ public class FollowUpDbContext : DbContext
                 .HasMaxLength(50)
                 .HasDefaultValue("pending");
         });
-        
+
+        modelBuilder.Entity<AppointmentReference>(entity =>
+        {
+            entity.ToTable("appointment_reference");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
+            entity.Property(e => e.PatientId).HasColumnName("patient_id").IsRequired();
+            entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at").IsRequired();
+        });
+
     }
 }

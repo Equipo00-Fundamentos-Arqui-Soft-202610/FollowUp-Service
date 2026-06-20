@@ -51,6 +51,25 @@ namespace MediTrack.FollowUpService.API.Migrations
                     b.ToTable("appointment_compliances", (string)null);
                 });
 
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.AppointmentReference", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("ScheduledAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("scheduled_at");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("appointment_reference", (string)null);
+                });
+
             modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
                 {
                     b.Property<int>("Id")

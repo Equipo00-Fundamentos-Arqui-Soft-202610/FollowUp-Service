@@ -1,8 +1,11 @@
 using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.EntityFrameworkCore;
@@ -34,6 +37,17 @@ builder.Services.AddScoped<IMedicationComplianceRepository, MedicationCompliance
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
+builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
+builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
+builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
+builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueRepository>();
+builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
+builder.Services.AddScoped<IPrescriptionCreatedEventHandler, PrescriptionCreatedEventHandler>();
+builder.Services.AddScoped<IAppointmentScheduledEventHandler, AppointmentScheduledEventHandler>();
+builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
+builder.Services.AddHostedService<AppointmentScheduledConsumer>();
+builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

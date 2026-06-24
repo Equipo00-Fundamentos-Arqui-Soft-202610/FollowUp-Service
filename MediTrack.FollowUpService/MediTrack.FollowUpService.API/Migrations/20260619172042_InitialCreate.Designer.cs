@@ -3,6 +3,7 @@ using System;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace MediTrack.FollowUpService.API.Migrations
 {
     [DbContext(typeof(FollowUpDbContext))]
-    partial class FollowUpDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260619172042_InitialCreate")]
+    partial class InitialCreate
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -49,25 +52,6 @@ namespace MediTrack.FollowUpService.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("appointment_compliances", (string)null);
-                });
-
-            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.AppointmentReference", b =>
-                {
-                    b.Property<int>("Id")
-                        .HasColumnType("int")
-                        .HasColumnName("id");
-
-                    b.Property<int>("PatientId")
-                        .HasColumnType("int")
-                        .HasColumnName("patient_id");
-
-                    b.Property<DateTime>("ScheduledAt")
-                        .HasColumnType("datetime(6)")
-                        .HasColumnName("scheduled_at");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("appointment_reference", (string)null);
                 });
 
             modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>

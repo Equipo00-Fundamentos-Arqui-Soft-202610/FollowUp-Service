@@ -1,0 +1,2976 @@
+=== ./Application/Internal/CommandServices/AppointmentComplianceCommandService.cs ===
+using MediTrack.FollowUpService.API.Application.OutboundEvents;
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Infrastructure.Messaging;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+
+public class AppointmentComplianceCommandService : IAppointmentComplianceCommandService
+{
+    private readonly IAppointmentComplianceRepository _repository;
+    private readonly IEventPublisher _eventPublisher;
+    private readonly ILogger<AppointmentComplianceCommandService> _logger;
+
+    public AppointmentComplianceCommandService(
+        IAppointmentComplianceRepository repository,
+        IEventPublisher eventPublisher,
+        ILogger<AppointmentComplianceCommandService> logger)
+    {
+        _repository = repository;
+        _eventPublisher = eventPublisher;
+        _logger = logger;
+    }
+
+    public async Task<AppointmentCompliance?> Handle(RecordAppointmentComplianceCommand command)
+    {
+        var compliance = new AppointmentCompliance(
+            command.PatientId,
+            command.AppointmentId,
+            command.Attended,
+            command.Notes);
+
+        await _repository.AddAsync(compliance);
+
+        try
+        {
+            await _eventPublisher.PublishAsync(
+                "ComplianceRegistered",
+                new AppointmentComplianceRegisteredEvent
+                {
+                    PatientId = compliance.PatientId,
+                    WasCompliant = compliance.Attended
+                });
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Failed to publish appointment compliance registered event for patient {PatientId} and appointment {AppointmentId}",
+                compliance.PatientId,
+                compliance.AppointmentId);
+        }
+
+        return compliance;
+    }
+}
+=== ./Application/Internal/CommandServices/MedicationComplianceCommandService.cs ===
+using MediTrack.FollowUpService.API.Application.OutboundEvents;
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Infrastructure.Messaging;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+
+public class MedicationComplianceCommandService : IMedicationComplianceCommandService
+{
+    private readonly IMedicationComplianceRepository _complianceRepository;
+    private readonly FollowUpDbContext _context;
+    private readonly IEventPublisher _eventPublisher;
+    private readonly ILogger<MedicationComplianceCommandService> _logger;
+
+    public MedicationComplianceCommandService(
+        IMedicationComplianceRepository complianceRepository,
+        FollowUpDbContext context,
+        IEventPublisher eventPublisher,
+        ILogger<MedicationComplianceCommandService> logger)
+    {
+        _complianceRepository = complianceRepository;
+        _context = context;
+        _eventPublisher = eventPublisher;
+        _logger = logger;
+    }
+
+    public async Task<MedicationCompliance> HandleAsync(RecordComplianceCommand command)
+    {
+        // Validate that status is either "taken" or "skipped"
+        if (command.Status != "taken" && command.Status != "skipped")
+            throw new ArgumentException("Status must be either 'taken' or 'skipped'");
+
+        // Validate that DoseSchedule exists
+        var doseScheduleExists = await _context.DoseSchedules
+            .AnyAsync(ds => ds.Id == command.DoseScheduleId);
+        
+        if (!doseScheduleExists)
+            throw new ArgumentException($"DoseSchedule with ID {command.DoseScheduleId} does not exist");
+
+        // Create compliance record
+        var compliance = new MedicationCompliance(
+            patientId: command.PatientId,
+            doseScheduleId: command.DoseScheduleId,
+            status: command.Status,
+            videoUrl: command.VideoUrl,
+            offlineRecordedAt: command.OfflineRecordedAt
+        );
+
+        await _complianceRepository.AddAsync(compliance);
+
+        try
+        {
+            var wasCompliant = compliance.IsTaken;
+
+            await _eventPublisher.PublishAsync(
+                "CumplimientoRegistrado",
+                new CumplimientoRegistradoEvent
+                {
+                    PatientId = compliance.PatientId,
+                    EntityId = compliance.DoseScheduleId
+                });
+
+            await _eventPublisher.PublishAsync(
+                "ComplianceRegistered",
+                new ComplianceRegisteredEvent
+                {
+                    PatientId = compliance.PatientId,
+                    WasCompliant = wasCompliant
+                });
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Failed to publish compliance registered events for patient {PatientId} and dose schedule {DoseScheduleId}",
+                compliance.PatientId,
+                compliance.DoseScheduleId);
+        }
+
+        return compliance;
+    }
+}
+=== ./Application/Internal/CommandServices/OfflineSyncCommandService.cs ===
+using System.Text.Json;
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+
+public class OfflineSyncCommandService : IOfflineSyncCommandService
+{
+    private readonly IOfflineSyncQueueRepository _syncRepository;
+    private readonly IMedicationComplianceCommandService _medicationComplianceService;
+    private readonly IAppointmentComplianceCommandService _appointmentComplianceService;
+    private readonly ILogger<OfflineSyncCommandService> _logger;
+
+    public OfflineSyncCommandService(
+        IOfflineSyncQueueRepository syncRepository,
+        IMedicationComplianceCommandService medicationComplianceService,
+        IAppointmentComplianceCommandService appointmentComplianceService,
+        ILogger<OfflineSyncCommandService> logger)
+    {
+        _syncRepository = syncRepository;
+        _medicationComplianceService = medicationComplianceService;
+        _appointmentComplianceService = appointmentComplianceService;
+        _logger = logger;
+    }
+
+    public async Task<List<OfflineSyncResultDto>> Handle(ProcessSyncBatchCommand command)
+    {
+        var results = new List<OfflineSyncResultDto>();
+
+        foreach (var item in command.Items)
+        {
+            var queueItem = new OfflineSyncQueueItem(
+                item.PatientId, item.EntityType, item.PayloadJson, item.QueuedAt);
+
+            await _syncRepository.AddAsync(queueItem);
+
+            try
+            {
+                int? createdId = null;
+
+                switch (item.EntityType)
+                {
+                    case "medication_compliance":
+                    {
+                        var resource = JsonSerializer.Deserialize<RecordComplianceResource>(
+                            item.PayloadJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                        if (resource is null)
+                        {
+                            queueItem.MarkFailed();
+                            await _syncRepository.UpdateAsync(queueItem);
+                            results.Add(new OfflineSyncResultDto(item.EntityType, null, "failed", "Invalid payload format"));
+                            continue;
+                        }
+
+                        var recordCommand = new RecordComplianceCommand(
+                            item.PatientId,
+                            resource.DoseScheduleId,
+                            resource.Status,
+                            resource.VideoUrl,
+                            resource.OfflineRecordedAt);
+
+                        var compliance = await _medicationComplianceService.HandleAsync(recordCommand);
+                        createdId = compliance.Id;
+                        break;
+                    }
+
+                    case "appointment_compliance":
+                    {
+                        var resource = JsonSerializer.Deserialize<RecordAppointmentComplianceResource>(
+                            item.PayloadJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                        if (resource is null)
+                        {
+                            queueItem.MarkFailed();
+                            await _syncRepository.UpdateAsync(queueItem);
+                            results.Add(new OfflineSyncResultDto(item.EntityType, null, "failed", "Invalid payload format"));
+                            continue;
+                        }
+
+                        var apptCommand = new RecordAppointmentComplianceCommand(
+                            resource.PatientId,
+                            resource.AppointmentId,
+                            resource.Attended,
+                            resource.Notes);
+
+                        var appointmentCompliance = await _appointmentComplianceService.Handle(apptCommand);
+                        createdId = appointmentCompliance?.Id;
+                        break;
+                    }
+
+                    default:
+                    {
+                        queueItem.MarkFailed();
+                        await _syncRepository.UpdateAsync(queueItem);
+                        results.Add(new OfflineSyncResultDto(
+                            item.EntityType, null, "failed", $"Unknown entity type: {item.EntityType}"));
+                        continue;
+                    }
+                }
+
+                queueItem.MarkSynced();
+                await _syncRepository.UpdateAsync(queueItem);
+                results.Add(new OfflineSyncResultDto(item.EntityType, createdId, "synced", null));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Failed to process sync item for patient {PatientId}, type {EntityType}",
+                    item.PatientId, item.EntityType);
+
+                queueItem.MarkFailed();
+                await _syncRepository.UpdateAsync(queueItem);
+                results.Add(new OfflineSyncResultDto(item.EntityType, null, "failed", ex.Message));
+            }
+        }
+
+        return results;
+    }
+}
+=== ./Application/Internal/QueryServices/AdherenceHistoryQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+
+public class AdherenceHistoryQueryService : IAdherenceHistoryQueryService
+{
+    private static readonly TimeZoneInfo LimaTimeZone =
+        TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time");
+
+    private readonly IMedicationComplianceRepository _complianceRepository;
+    private readonly IMedicationRepository _medicationRepository;
+
+    public AdherenceHistoryQueryService(
+        IMedicationComplianceRepository complianceRepository,
+        IMedicationRepository medicationRepository)
+    {
+        _complianceRepository = complianceRepository;
+        _medicationRepository = medicationRepository;
+    }
+
+    public async Task<AdherenceHistory?> HandleAsync(GetAdherenceHistoryQuery query)
+    {
+        if (query.PatientId <= 0)
+            throw new ArgumentException("PatientId must be greater than 0");
+
+        var compliances = await _complianceRepository.FindByPatientIdAsync(query.PatientId);
+        if (!compliances.Any())
+            return null;
+
+        var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
+
+        var weeks = compliances
+            .GroupBy(compliance => GetWeekStart(ToLimaDate(compliance.RecordedAt)))
+            .Select(group =>
+            {
+                var weekStart = group.Key;
+                var weekEnd = weekStart.AddDays(6);
+                var totalDoses = CountActiveDoseOccurrencesForWeek(medications, weekStart);
+                var takenDoses = group.Count(compliance => compliance.Status.IsTaken);
+
+                return new WeeklyAdherence(
+                    WeekStart: weekStart,
+                    WeekEnd: weekEnd,
+                    TakenDoses: takenDoses,
+                    TotalDoses: totalDoses,
+                    AdherencePercentage: CalculatePercentage(takenDoses, totalDoses));
+            })
+            .OrderByDescending(week => week.WeekStart)
+            .ToList();
+
+        var totalTakenDoses = weeks.Sum(week => week.TakenDoses);
+        var totalDosesAcrossWeeks = weeks.Sum(week => week.TotalDoses);
+
+        return new AdherenceHistory(
+            OverallAdherencePercentage: CalculatePercentage(totalTakenDoses, totalDosesAcrossWeeks),
+            Weeks: weeks);
+    }
+
+    private static DateTime ToLimaDate(DateTime dateTime)
+    {
+        return ToLimaDateTime(dateTime).Date;
+    }
+
+    private static DateTime ToLimaDateTime(DateTime dateTime)
+    {
+        var utcDateTime = dateTime.Kind switch
+        {
+            DateTimeKind.Utc => dateTime,
+            DateTimeKind.Local => dateTime.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+        };
+
+        return TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, LimaTimeZone);
+    }
+
+    private static DateTime GetWeekStart(DateTime date)
+    {
+        var daysSinceMonday = ((int)date.DayOfWeek + 6) % 7;
+        return date.AddDays(-daysSinceMonday).Date;
+    }
+
+    private static int CountActiveDoseOccurrencesForWeek(
+        IEnumerable<Domain.Model.Aggregates.Medication> medications,
+        DateTime weekStart)
+    {
+        var weekEndExclusive = weekStart.AddDays(7);
+        var totalDoses = 0;
+
+        foreach (var medication in medications)
+        {
+            var medicationStart = ToLimaDateTime(medication.StartDate);
+            var medicationEnd = medication.EndDate.HasValue
+                ? ToLimaDateTime(medication.EndDate.Value)
+                : DateTime.MaxValue;
+
+            foreach (var schedule in medication.Schedules.Where(schedule => schedule.IsActive))
+            {
+                for (var day = weekStart; day < weekEndExclusive; day = day.AddDays(1))
+                {
+                    var scheduledDoseAt = day.Date.Add(schedule.ScheduledTime.Value);
+                    if (scheduledDoseAt >= medicationStart && scheduledDoseAt <= medicationEnd)
+                        totalDoses++;
+                }
+            }
+        }
+
+        return totalDoses;
+    }
+
+    private static decimal CalculatePercentage(int takenDoses, int totalDoses)
+    {
+        if (totalDoses <= 0)
+            return 0m;
+
+        return Math.Round((decimal)takenDoses / totalDoses * 100m, 2);
+    }
+}
+=== ./Application/Internal/QueryServices/AppointmentComplianceQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+
+public class AppointmentComplianceQueryService : IAppointmentComplianceQueryService
+{
+    private readonly IAppointmentComplianceRepository _repository;
+
+    public AppointmentComplianceQueryService(IAppointmentComplianceRepository repository)
+    {
+        _repository = repository;
+    }
+
+    public async Task<AppointmentCompliance?> Handle(GetAppointmentComplianceByIdQuery query)
+    {
+        return await _repository.FindByIdAsync(query.Id);
+    }
+
+    public async Task<IEnumerable<AppointmentCompliance>> Handle(GetAppointmentCompliancesByPatientQuery query)
+    {
+        return await _repository.FindByPatientIdAsync(query.PatientId);
+    }
+}
+=== ./Application/Internal/QueryServices/LowStockMedicationQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+
+public class LowStockMedicationQueryService : ILowStockMedicationQueryService
+{
+    private const int LowStockThreshold = 5;
+
+    private readonly IMedicationRepository _medicationRepository;
+
+    public LowStockMedicationQueryService(IMedicationRepository medicationRepository)
+    {
+        _medicationRepository = medicationRepository;
+    }
+
+    public async Task<ICollection<Medication>> HandleAsync(GetLowStockMedicationsQuery query)
+    {
+        if (query.PatientId <= 0)
+            throw new ArgumentException("PatientId must be greater than 0");
+
+        var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
+
+        return medications
+            .Where(medication => medication.IsActive && medication.StockCount <= LowStockThreshold)
+            .ToList();
+    }
+}
+=== ./Application/Internal/QueryServices/MedicationQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+
+public class MedicationQueryService : IMedicationQueryService
+{
+    private readonly IMedicationRepository _medicationRepository;
+
+    public MedicationQueryService(IMedicationRepository medicationRepository)
+    {
+        _medicationRepository = medicationRepository;
+    }
+
+    public async Task<ICollection<Medication>> HandleAsync(GetMedicationsByPatientIdQuery query)
+    {
+        if (query.PatientId <= 0)
+            throw new ArgumentException("PatientId must be greater than 0");
+
+        var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
+        return medications;
+    }
+}=== ./Application/Internal/QueryServices/NextPendingDoseQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+
+public class NextPendingDoseQueryService : INextPendingDoseQueryService
+{
+    private readonly IMedicationRepository _medicationRepository;
+    private readonly IMedicationComplianceRepository _complianceRepository;
+
+    public NextPendingDoseQueryService(
+        IMedicationRepository medicationRepository,
+        IMedicationComplianceRepository complianceRepository)
+    {
+        _medicationRepository = medicationRepository;
+        _complianceRepository = complianceRepository;
+    }
+
+    public async Task<MedicationCompliance?> HandleAsync(GetNextPendingDoseQuery query)
+    {
+        if (query.PatientId <= 0)
+            throw new ArgumentException("PatientId must be greater than 0");
+
+        // Get all active medications for the patient 
+        var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
+        var activeMedications = medications.Where(m => m.IsActive).ToList();
+
+        if (!activeMedications.Any())
+            return null;
+
+        // Get all active dose schedules from active medications
+        var activeDoseSchedules = activeMedications
+            .SelectMany(m => m.Schedules)
+            .Where(s => s.IsActive)
+            .ToList();
+
+        if (!activeDoseSchedules.Any())
+            return null;
+
+       
+
+        // Get Lima Hour
+        var limaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time");
+        var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, limaTimeZone);
+        var today = now.Date;
+        
+        
+        // Get all compliance records for today
+        var complianceRecords = await _complianceRepository.FindByPatientIdAsync(query.PatientId);
+        var todayCompliances = complianceRecords
+            .Where(c => c.RecordedAt.Date == today)
+            .ToList();
+        
+        var nextPendingSchedule = activeDoseSchedules
+            .Where(s =>
+            {
+                var hasTakenCompliance = todayCompliances.Any(c =>
+                    c.DoseScheduleId == s.Id && c.Status.IsTaken);
+                return !hasTakenCompliance;
+            })
+            .OrderBy(s => s.ScheduledTime.Value > now.TimeOfDay ? 0 : 1) 
+            .ThenBy(s => s.ScheduledTime.Value)
+            .FirstOrDefault();
+
+        if (nextPendingSchedule == null)
+            return null;
+
+        // Create a virtual MedicationCompliance object to return dose information
+        // The DoseSchedule already has the Medication relationship loaded
+        var doseCompliance = new MedicationCompliance
+        {
+            DoseScheduleId = nextPendingSchedule.Id,
+            DoseSchedule = nextPendingSchedule,
+            PatientId = query.PatientId
+        };
+
+        return doseCompliance;
+    }
+}
+
+=== ./Application/OutboundEvents/AppointmentComplianceRegisteredEvent.cs ===
+namespace MediTrack.FollowUpService.API.Application.OutboundEvents;
+
+public record AppointmentComplianceRegisteredEvent
+{
+    public int PatientId { get; init; }
+    public string Category { get; init; } = "appointment";
+    public bool WasCompliant { get; init; }
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
+}
+=== ./Application/OutboundEvents/ComplianceRegisteredEvent.cs ===
+namespace MediTrack.FollowUpService.API.Application.OutboundEvents;
+
+public record ComplianceRegisteredEvent
+{
+    public int PatientId { get; init; }
+    public string Category { get; init; } = "medication";
+    public bool WasCompliant { get; init; }
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
+}
+=== ./Application/OutboundEvents/CumplimientoRegistradoEvent.cs ===
+namespace MediTrack.FollowUpService.API.Application.OutboundEvents;
+
+public record CumplimientoRegistradoEvent
+{
+    public Guid EventId { get; init; } = Guid.NewGuid();
+    public DateTime OccurredAtUtc { get; init; } = DateTime.UtcNow;
+    public Guid CorrelationId { get; init; } = Guid.NewGuid();
+    public string EventType => "CumplimientoRegistrado";
+    public int PatientId { get; init; }
+    public string EntityType { get; init; } = "Medication";
+    public int EntityId { get; init; }
+}
+=== ./Domain/Model/AdherenceHistory.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public record WeeklyAdherence(
+    DateTime WeekStart,
+    DateTime WeekEnd,
+    int TakenDoses,
+    int TotalDoses,
+    decimal AdherencePercentage);
+
+public record AdherenceHistory(
+    decimal OverallAdherencePercentage,
+    IReadOnlyCollection<WeeklyAdherence> Weeks);
+=== ./Domain/Model/Aggregates/AppointmentCompliance.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+public class AppointmentCompliance
+{
+    public int Id { get; private set; }
+    public int PatientId { get; private set; }
+    public int AppointmentId { get; private set; }
+    public bool Attended { get; private set; }
+    public DateTime RecordedAt { get; private set; }
+    public string? Notes { get; private set; }
+
+    protected AppointmentCompliance() { }
+
+    public AppointmentCompliance(int patientId, int appointmentId, bool attended, string? notes)
+    {
+        if (patientId <= 0) throw new ArgumentException("PatientId must be positive");
+        if (appointmentId <= 0) throw new ArgumentException("AppointmentId must be positive");
+
+        PatientId = patientId;
+        AppointmentId = appointmentId;
+        Attended = attended;
+        Notes = notes;
+        RecordedAt = DateTime.UtcNow;
+    }
+}
+=== ./Domain/Model/Aggregates/DoseSchedule.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+
+namespace MediTrack.FollowUpService.API.Domain.Models;
+
+public class DoseSchedule
+{
+    public int Id { get; set; }
+    public int MedicationId { get; set; }
+    public ScheduledHour ScheduledTime { get; set; } = null!;
+    public bool IsActive { get; set; }
+    public Medication Medication { get; set; } = null!;
+
+    public DoseSchedule() { }
+
+    public DoseSchedule(int medicationId, TimeSpan scheduledTime, bool isActive = true)
+    {
+        MedicationId = medicationId;
+        ScheduledTime = new ScheduledHour(scheduledTime);
+        IsActive = isActive;
+    }
+}=== ./Domain/Model/Aggregates/Medication.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+using MediTrack.FollowUpService.API.Domain.Models;
+
+namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+
+public class Medication
+{
+    public int Id { get; set; }
+    public int PatientId { get; set; }
+    public string Name { get; set; } = null!;
+    public DoseValue Dose { get; set; } = null!;
+    public int FrequencyHours { get; set; }
+    public DateTime StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public int StockCount { get; set; }
+    public List<DoseSchedule> Schedules { get; set; } = new();
+
+    public Medication() { }
+
+    public Medication(int patientId, string name, string dose, int frequencyHours, 
+        DateTime startDate, int stockCount)
+    {
+        PatientId = patientId;
+        Name = name;
+        Dose = new DoseValue(dose);
+        FrequencyHours = frequencyHours;
+        StartDate = startDate;
+        StockCount = stockCount;
+    }
+
+    public void UpdateStockCount(int newCount)
+    {
+        if (newCount < 0)
+            throw new ArgumentException("Stock count cannot be negative");
+        StockCount = newCount;
+    }
+
+    public bool IsActive => EndDate == null || EndDate > DateTime.Now;
+}=== ./Domain/Model/Aggregates/MedicationCompliance.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+using MediTrack.FollowUpService.API.Domain.Models;
+
+namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+public class MedicationCompliance
+{
+    public int Id { get; set; }
+    public int PatientId { get; set; }
+    public int DoseScheduleId { get; set; }
+    public ComplianceStatus Status { get; set; } = null!;
+    public DateTime RecordedAt { get; set; }
+    public string? VideoUrl { get; set; }
+    public bool Synced { get; set; } = true;
+    public DateTime? OfflineRecordedAt { get; set; }
+    
+    public DoseSchedule DoseSchedule { get; set; } = null!;
+
+    public MedicationCompliance() { }
+
+    public MedicationCompliance(int patientId, int doseScheduleId, string status, 
+        string? videoUrl = null, DateTime? offlineRecordedAt = null)
+    {
+        PatientId = patientId;
+        DoseScheduleId = doseScheduleId;
+        Status = ComplianceStatus.From(status);
+        VideoUrl = videoUrl;
+        RecordedAt = DateTime.UtcNow;
+        OfflineRecordedAt = offlineRecordedAt;
+    }
+
+    public bool IsTaken => Status.IsTaken;
+    
+    public void MarkAsSynced()
+    {
+        Synced = true;
+    }
+}=== ./Domain/Model/Aggregates/OfflineSyncQueueItem.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+public class OfflineSyncQueueItem
+{
+    public int Id { get; private set; }
+    public int PatientId { get; private set; }
+    public string EntityType { get; private set; } = string.Empty;
+    public string Payload { get; private set; } = string.Empty;
+    public DateTime QueuedAt { get; private set; }
+    public DateTime? SyncedAt { get; private set; }
+    public string Status { get; private set; } = "pending";
+
+    protected OfflineSyncQueueItem() { }
+
+    public OfflineSyncQueueItem(int patientId, string entityType, string payload, DateTime queuedAt)
+    {
+        PatientId = patientId;
+        EntityType = entityType;
+        Payload = payload;
+        QueuedAt = queuedAt;
+        Status = "pending";
+    }
+
+    public void MarkSynced()
+    {
+        Status = "synced";
+        SyncedAt = DateTime.UtcNow;
+    }
+
+    public void MarkFailed()
+    {
+        Status = "failed";
+    }
+}
+=== ./Domain/Model/Commands/ProcessSyncBatchCommand.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+public record SyncQueueItemDto(
+    int PatientId,
+    string EntityType,
+    string PayloadJson,
+    DateTime QueuedAt
+);
+
+public record ProcessSyncBatchCommand(List<SyncQueueItemDto> Items);
+=== ./Domain/Model/Commands/RecordAppointmentComplianceCommand.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+public record RecordAppointmentComplianceCommand(
+    int PatientId,
+    int AppointmentId,
+    bool Attended,
+    string? Notes
+);
+=== ./Domain/Model/Commands/RecordComplianceCommand.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+public record RecordComplianceCommand(
+    int PatientId,
+    int DoseScheduleId,
+    string Status,
+    string? VideoUrl = null,
+    DateTime? OfflineRecordedAt = null
+);=== ./Domain/Model/IAdherenceHistoryQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IAdherenceHistoryQueryService
+{
+    Task<AdherenceHistory?> HandleAsync(GetAdherenceHistoryQuery query);
+}
+=== ./Domain/Model/IAppointmentComplianceCommandService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IAppointmentComplianceCommandService
+{
+    Task<AppointmentCompliance?> Handle(RecordAppointmentComplianceCommand command);
+}
+=== ./Domain/Model/IAppointmentComplianceQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IAppointmentComplianceQueryService
+{
+    Task<AppointmentCompliance?> Handle(GetAppointmentComplianceByIdQuery query);
+    Task<IEnumerable<AppointmentCompliance>> Handle(GetAppointmentCompliancesByPatientQuery query);
+}
+=== ./Domain/Model/IAppointmentComplianceRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IAppointmentComplianceRepository
+{
+    Task AddAsync(AppointmentCompliance compliance);
+    Task<AppointmentCompliance?> FindByIdAsync(int id);
+    Task<IEnumerable<AppointmentCompliance>> FindByPatientIdAsync(int patientId);
+}
+=== ./Domain/Model/ILowStockMedicationQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface ILowStockMedicationQueryService
+{
+    Task<ICollection<Medication>> HandleAsync(GetLowStockMedicationsQuery query);
+}
+=== ./Domain/Model/IMedicationComplianceCommandService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IMedicationComplianceCommandService
+{
+    Task<MedicationCompliance> HandleAsync(RecordComplianceCommand command);
+}=== ./Domain/Model/IMedicationComplianceRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IMedicationComplianceRepository
+{
+    Task<MedicationCompliance?> FindByIdAsync(int complianceId);
+    Task<ICollection<MedicationCompliance>> FindByPatientIdAsync(int patientId);
+    Task<ICollection<MedicationCompliance>> FindByDoseScheduleIdAsync(int doseScheduleId);
+    Task AddAsync(MedicationCompliance compliance);
+    Task UpdateAsync(MedicationCompliance compliance);
+    Task DeleteAsync(int complianceId);
+}=== ./Domain/Model/IMedicationQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IMedicationQueryService
+{
+    Task<ICollection<Medication>> HandleAsync(GetMedicationsByPatientIdQuery query);
+}=== ./Domain/Model/IMedicationRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IMedicationRepository
+{
+    Task<ICollection<Medication>> FindByPatientIdAsync(int patientId);
+    Task<Medication?> FindByIdAsync(int medicationId);
+    Task AddAsync(Medication medication);
+    Task UpdateAsync(Medication medication);
+    Task DeleteAsync(int medicationId);
+}=== ./Domain/Model/INextPendingDoseQueryService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface INextPendingDoseQueryService
+{
+    Task<MedicationCompliance?> HandleAsync(GetNextPendingDoseQuery query);
+}
+
+=== ./Domain/Model/IOfflineSyncCommandService.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public record OfflineSyncResultDto(string EntityType, int? CreatedId, string Status, string? ErrorMessage);
+
+public interface IOfflineSyncCommandService
+{
+    Task<List<OfflineSyncResultDto>> Handle(ProcessSyncBatchCommand command);
+}
+=== ./Domain/Model/IOfflineSyncQueueRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+
+namespace MediTrack.FollowUpService.API.Domain.Model;
+
+public interface IOfflineSyncQueueRepository
+{
+    Task AddAsync(OfflineSyncQueueItem item);
+    Task UpdateAsync(OfflineSyncQueueItem item);
+    Task<IEnumerable<OfflineSyncQueueItem>> FindByPatientIdAsync(int patientId);
+}
+=== ./Domain/Model/Queries/GetAdherenceHistoryQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetAdherenceHistoryQuery(int PatientId);
+=== ./Domain/Model/Queries/GetAppointmentComplianceByIdQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetAppointmentComplianceByIdQuery(int Id);
+=== ./Domain/Model/Queries/GetAppointmentCompliancesByPatientQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetAppointmentCompliancesByPatientQuery(int PatientId);
+=== ./Domain/Model/Queries/GetLowStockMedicationsQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetLowStockMedicationsQuery(int PatientId);
+=== ./Domain/Model/Queries/GetMedicationsByPatientIdQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetMedicationsByPatientIdQuery(int PatientId);=== ./Domain/Model/Queries/GetNextPendingDoseQuery.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.Queries;
+
+public record GetNextPendingDoseQuery(int PatientId);
+
+=== ./Domain/Model/ValueObjects/ComplianceStatus.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+
+public class ComplianceStatus
+{
+    public static readonly ComplianceStatus Taken = new("taken");
+    public static readonly ComplianceStatus Skipped = new("skipped");
+
+    private static readonly Dictionary<string, ComplianceStatus> _validStatuses = new()
+    {
+        { "taken", Taken },
+        { "skipped", Skipped }
+    };
+
+    public string Value { get; }
+
+    private ComplianceStatus(string value)
+    {
+        Value = value;
+    }
+
+    public static ComplianceStatus From(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("ComplianceStatus cannot be empty or null", nameof(value));
+
+        var lowerValue = value.ToLowerInvariant();
+        if (!_validStatuses.TryGetValue(lowerValue, out var status))
+            throw new ArgumentException($"Invalid ComplianceStatus '{value}'. Valid values are: 'taken', 'skipped'", nameof(value));
+
+        return status;
+    }
+
+    public bool IsTaken => this.Value == "taken";
+    public bool IsSkipped => this.Value == "skipped";
+
+    public override bool Equals(object? obj)
+    {
+        return obj is ComplianceStatus cs && cs.Value == Value;
+    }
+
+    public override int GetHashCode()
+    {
+        return Value.GetHashCode();
+    }
+
+    public override string ToString()
+    {
+        return Value;
+    }
+
+    // Implicit conversion to string for EF Core compatibility
+    public static implicit operator string(ComplianceStatus status) => status.Value;
+
+    // Implicit conversion from string for convenience (factory method preferred)
+    public static implicit operator ComplianceStatus(string value) => From(value);
+}
+
+=== ./Domain/Model/ValueObjects/DoseValue.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+
+public class DoseValue
+{
+    public string Value { get; }
+
+    public DoseValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("DoseValue cannot be empty or null", nameof(value));
+
+        if (value.Length > 100)
+            throw new ArgumentException("DoseValue cannot exceed 100 characters", nameof(value));
+
+        Value = value.Trim();
+    }
+
+    public override bool Equals(object? obj)
+    {
+        return obj is DoseValue dv && dv.Value == Value;
+    }
+
+    public override int GetHashCode()
+    {
+        return Value.GetHashCode();
+    }
+
+    public override string ToString()
+    {
+        return Value;
+    }
+
+    // Implicit conversion to string for EF Core compatibility
+    public static implicit operator string(DoseValue dose) => dose.Value;
+
+    // Implicit conversion from string for convenience
+    public static implicit operator DoseValue(string value) => new(value);
+}
+
+=== ./Domain/Model/ValueObjects/ScheduledHour.cs ===
+namespace MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+
+public class ScheduledHour
+{
+    public TimeSpan Value { get; }
+
+    public ScheduledHour(TimeSpan value)
+    {
+        if (value.TotalHours < 0 || value.TotalHours >= 24)
+            throw new ArgumentException("ScheduledHour must be between 00:00 and 23:59", nameof(value));
+
+        Value = value;
+    }
+
+    public static ScheduledHour From(int hours, int minutes = 0, int seconds = 0)
+    {
+        if (hours < 0 || hours >= 24)
+            throw new ArgumentException("Hours must be between 0 and 23", nameof(hours));
+
+        if (minutes < 0 || minutes >= 60)
+            throw new ArgumentException("Minutes must be between 0 and 59", nameof(minutes));
+
+        if (seconds < 0 || seconds >= 60)
+            throw new ArgumentException("Seconds must be between 0 and 59", nameof(seconds));
+
+        return new ScheduledHour(new TimeSpan(0, hours, minutes, seconds));
+    }
+
+    public int Hours => Value.Hours;
+    public int Minutes => Value.Minutes;
+    public int Seconds => Value.Seconds;
+
+    public override bool Equals(object? obj)
+    {
+        return obj is ScheduledHour sh && sh.Value == Value;
+    }
+
+    public override int GetHashCode()
+    {
+        return Value.GetHashCode();
+    }
+
+    public override string ToString()
+    {
+        return Value.ToString("hh\\:mm\\:ss");
+    }
+
+    // Implicit conversion to TimeSpan for EF Core compatibility
+    public static implicit operator TimeSpan(ScheduledHour hour) => hour.Value;
+
+    // Implicit conversion from TimeSpan for convenience
+    public static implicit operator ScheduledHour(TimeSpan value) => new(value);
+}
+
+=== ./Infrastructure/Messaging/IEventPublisher.cs ===
+namespace MediTrack.FollowUpService.API.Infrastructure.Messaging;
+
+public interface IEventPublisher
+{
+    Task PublishAsync(string routingKey, object payload);
+}
+=== ./Infrastructure/Messaging/RabbitMqPublisher.cs ===
+using System.Text;
+using System.Text.Json;
+using RabbitMQ.Client;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Messaging;
+
+public class RabbitMqPublisher : IEventPublisher, IDisposable
+{
+    private readonly IConfiguration _configuration;
+    private readonly object _connectionLock = new();
+    private IConnection? _connection;
+    private bool _disposed;
+
+    public RabbitMqPublisher(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
+    public Task PublishAsync(string routingKey, object payload)
+    {
+        using var channel = GetConnection().CreateModel();
+        var exchangeName = GetExchangeName();
+
+        channel.ExchangeDeclare(
+            exchange: exchangeName,
+            type: ExchangeType.Topic,
+            durable: true,
+            autoDelete: false);
+
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload));
+        var properties = channel.CreateBasicProperties();
+        properties.Persistent = true;
+        properties.ContentType = "application/json";
+        properties.Type = routingKey;
+
+        channel.BasicPublish(
+            exchange: exchangeName,
+            routingKey: routingKey,
+            basicProperties: properties,
+            body: body);
+
+        return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        _connection?.Dispose();
+        _disposed = true;
+    }
+
+    private IConnection GetConnection()
+    {
+        if (_connection is { IsOpen: true })
+            return _connection;
+
+        lock (_connectionLock)
+        {
+            if (_connection is { IsOpen: true })
+                return _connection;
+
+            _connection?.Dispose();
+            _connection = CreateConnection();
+            return _connection;
+        }
+    }
+
+    private IConnection CreateConnection()
+    {
+        var rabbitMqSection = _configuration.GetSection("RabbitMq");
+        var factory = new ConnectionFactory
+        {
+            HostName = rabbitMqSection["Host"] ?? "localhost",
+            Port = rabbitMqSection.GetValue("Port", 5672),
+            UserName = rabbitMqSection["UserName"] ?? "guest",
+            Password = rabbitMqSection["Password"] ?? "guest",
+            DispatchConsumersAsync = true
+        };
+
+        return factory.CreateConnection();
+    }
+
+    private string GetExchangeName()
+    {
+        return _configuration["RabbitMq:ExchangeName"] ?? "meditrack.events";
+    }
+}
+=== ./Infrastructure/Persistence/EFC/Configuration/FollowUpDbContext.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
+using MediTrack.FollowUpService.API.Domain.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+
+public class FollowUpDbContext : DbContext
+{
+    public FollowUpDbContext(DbContextOptions<FollowUpDbContext> options) 
+        : base(options) { }
+
+    public DbSet<Medication> Medications { get; set; } = null!;
+    public DbSet<DoseSchedule> DoseSchedules { get; set; } = null!;
+    public DbSet<MedicationCompliance> MedicationCompliances { get; set; } = null!;
+    public DbSet<AppointmentCompliance> AppointmentCompliances { get; set; } = null!;
+    public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<Medication>(entity =>
+        {
+            entity.ToTable("medications");
+            entity.HasKey(e => e.Id);
+            
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+            
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+            
+            entity.Property(e => e.Name)
+                .HasColumnName("name")
+                .HasMaxLength(255)
+                .IsRequired();
+            
+            entity.Property(e => e.Dose)
+                .HasColumnName("dose")
+                .HasMaxLength(100)
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => new DoseValue(v));
+            
+            entity.Property(e => e.FrequencyHours)
+                .HasColumnName("frequency_hour")
+                .IsRequired();
+            
+            entity.Property(e => e.StartDate)
+                .HasColumnName("start_date")
+                .IsRequired();
+            
+            entity.Property(e => e.EndDate)
+                .HasColumnName("end_date");
+            
+            entity.Property(e => e.StockCount)
+                .HasColumnName("stock_count")
+                .IsRequired();
+
+            entity.HasMany(e => e.Schedules)
+                .WithOne(s => s.Medication)
+                .HasForeignKey(s => s.MedicationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<DoseSchedule>(entity =>
+        {
+            entity.ToTable("dose_schedules");
+            entity.HasKey(e => e.Id);
+            
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+            
+            entity.Property(e => e.MedicationId)
+                .HasColumnName("medication_id")
+                .IsRequired();
+            
+            entity.Property(e => e.ScheduledTime)
+                .HasColumnName("scheduled_time")
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => new ScheduledHour(v));
+            
+            entity.Property(e => e.IsActive)
+                .HasColumnName("is_active")
+                .HasDefaultValue(true);
+        });
+        
+        modelBuilder.Entity<MedicationCompliance>(entity =>
+        {
+            entity.ToTable("medication_compliances");
+            entity.HasKey(e => e.Id);
+    
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+    
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+    
+            entity.Property(e => e.DoseScheduleId)
+                .HasColumnName("dose_schedule_id")
+                .IsRequired();
+    
+            entity.Property(e => e.Status)
+                .HasColumnName("status")
+                .HasMaxLength(50)
+                .IsRequired()
+                .HasConversion(
+                    v => v.Value,
+                    v => ComplianceStatus.From(v));
+    
+            entity.Property(e => e.RecordedAt)
+                .HasColumnName("recorded_at")
+                .IsRequired();
+    
+            entity.Property(e => e.VideoUrl)
+                .HasColumnName("video_url");
+    
+            entity.Property(e => e.Synced)
+                .HasColumnName("synced")
+                .HasDefaultValue(true);
+    
+            entity.Property(e => e.OfflineRecordedAt)
+                .HasColumnName("offline_recorded_at");
+
+            entity.HasOne(e => e.DoseSchedule)
+                .WithMany()
+                .HasForeignKey(e => e.DoseScheduleId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+        
+        modelBuilder.Entity<AppointmentCompliance>(entity =>
+        {
+            entity.ToTable("appointment_compliances");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.AppointmentId)
+                .HasColumnName("appointment_id")
+                .IsRequired();
+
+            entity.Property(e => e.Attended)
+                .HasColumnName("attended")
+                .IsRequired();
+
+            entity.Property(e => e.RecordedAt)
+                .HasColumnName("recorded_at")
+                .IsRequired();
+
+            entity.Property(e => e.Notes)
+                .HasColumnName("notes");
+        });
+
+        modelBuilder.Entity<OfflineSyncQueueItem>(entity =>
+        {
+            entity.ToTable("offline_sync_queue");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.EntityType)
+                .HasColumnName("entity_type")
+                .IsRequired();
+
+            entity.Property(e => e.Payload)
+                .HasColumnName("payload")
+                .HasColumnType("json")
+                .IsRequired();
+
+            entity.Property(e => e.QueuedAt)
+                .HasColumnName("queued_at")
+                .IsRequired();
+
+            entity.Property(e => e.SyncedAt)
+                .HasColumnName("synced_at");
+
+            entity.Property(e => e.Status)
+                .HasColumnName("status")
+                .HasMaxLength(50)
+                .HasDefaultValue("pending");
+        });
+        
+    }
+}=== ./Infrastructure/Persistence/EFC/MedicationComplianceRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+
+public class MedicationComplianceRepository : IMedicationComplianceRepository
+{
+    private readonly FollowUpDbContext _context;
+
+    public MedicationComplianceRepository(FollowUpDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<MedicationCompliance?> FindByIdAsync(int complianceId)
+    {
+        return await _context.MedicationCompliances
+            .Include(mc => mc.DoseSchedule)
+            .FirstOrDefaultAsync(mc => mc.Id == complianceId);
+    }
+
+    public async Task<ICollection<MedicationCompliance>> FindByPatientIdAsync(int patientId)
+    {
+        return await _context.MedicationCompliances
+            .Where(mc => mc.PatientId == patientId)
+            .Include(mc => mc.DoseSchedule)
+            .OrderByDescending(mc => mc.RecordedAt)
+            .ToListAsync();
+    }
+
+    public async Task<ICollection<MedicationCompliance>> FindByDoseScheduleIdAsync(int doseScheduleId)
+    {
+        return await _context.MedicationCompliances
+            .Where(mc => mc.DoseScheduleId == doseScheduleId)
+            .OrderByDescending(mc => mc.RecordedAt)
+            .ToListAsync();
+    }
+
+    public async Task AddAsync(MedicationCompliance compliance)
+    {
+        await _context.MedicationCompliances.AddAsync(compliance);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task UpdateAsync(MedicationCompliance compliance)
+    {
+        _context.MedicationCompliances.Update(compliance);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task DeleteAsync(int complianceId)
+    {
+        var compliance = await FindByIdAsync(complianceId);
+        if (compliance != null)
+        {
+            _context.MedicationCompliances.Remove(compliance);
+            await _context.SaveChangesAsync();
+        }
+    }
+}=== ./Infrastructure/Persistence/EFC/MedicationRepository.cs ===
+
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+
+public class MedicationRepository : IMedicationRepository
+{
+    private readonly FollowUpDbContext _context;
+
+    public MedicationRepository(FollowUpDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<ICollection<Medication>> FindByPatientIdAsync(int patientId)
+    {
+        return await _context.Medications
+            .Where(m => m.PatientId == patientId)
+            .Include(m => m.Schedules)
+            .OrderBy(m => m.Name)
+            .ToListAsync();
+    }
+
+    public async Task<Medication?> FindByIdAsync(int medicationId)
+    {
+        return await _context.Medications
+            .Include(m => m.Schedules)
+            .FirstOrDefaultAsync(m => m.Id == medicationId);
+    }
+
+    public async Task AddAsync(Medication medication)
+    {
+        await _context.Medications.AddAsync(medication);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task UpdateAsync(Medication medication)
+    {
+        _context.Medications.Update(medication);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task DeleteAsync(int medicationId)
+    {
+        var medication = await FindByIdAsync(medicationId);
+        if (medication != null)
+        {
+            _context.Medications.Remove(medication);
+            await _context.SaveChangesAsync();
+        }
+    }
+}=== ./Infrastructure/Persistence/EFC/Repositories/AppointmentComplianceRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
+
+public class AppointmentComplianceRepository : IAppointmentComplianceRepository
+{
+    private readonly FollowUpDbContext _context;
+
+    public AppointmentComplianceRepository(FollowUpDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AddAsync(AppointmentCompliance compliance)
+    {
+        await _context.AppointmentCompliances.AddAsync(compliance);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<AppointmentCompliance?> FindByIdAsync(int id)
+    {
+        return await _context.AppointmentCompliances.FindAsync(id);
+    }
+
+    public async Task<IEnumerable<AppointmentCompliance>> FindByPatientIdAsync(int patientId)
+    {
+        return await _context.AppointmentCompliances
+            .Where(ac => ac.PatientId == patientId)
+            .OrderByDescending(ac => ac.RecordedAt)
+            .ToListAsync();
+    }
+}
+=== ./Infrastructure/Persistence/EFC/Repositories/OfflineSyncQueueRepository.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+
+namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
+
+public class OfflineSyncQueueRepository : IOfflineSyncQueueRepository
+{
+    private readonly FollowUpDbContext _context;
+
+    public OfflineSyncQueueRepository(FollowUpDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task AddAsync(OfflineSyncQueueItem item)
+    {
+        await _context.OfflineSyncQueueItems.AddAsync(item);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task UpdateAsync(OfflineSyncQueueItem item)
+    {
+        _context.OfflineSyncQueueItems.Update(item);
+        await _context.SaveChangesAsync();
+    }
+
+    public async Task<IEnumerable<OfflineSyncQueueItem>> FindByPatientIdAsync(int patientId)
+    {
+        return await _context.OfflineSyncQueueItems
+            .Where(o => o.PatientId == patientId)
+            .OrderByDescending(o => o.QueuedAt)
+            .ToListAsync();
+    }
+}
+=== ./Interfaces/REST/Controllers/AppointmentComplianceController.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Mvc;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
+
+[ApiController]
+[Route("api/v1/appointment-compliance")]
+public class AppointmentComplianceController : ControllerBase
+{
+    private readonly IAppointmentComplianceCommandService _commandService;
+    private readonly IAppointmentComplianceQueryService _queryService;
+
+    public AppointmentComplianceController(
+        IAppointmentComplianceCommandService commandService,
+        IAppointmentComplianceQueryService queryService)
+    {
+        _commandService = commandService;
+        _queryService = queryService;
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> RecordCompliance(
+        [FromQuery] int patientId,
+        [FromBody] RecordAppointmentComplianceResource resource)
+    {
+        try
+        {
+            if (patientId <= 0)
+                return BadRequest(new { message = "patientId must be positive" });
+            if (patientId != resource.PatientId)
+                return BadRequest(new { message = "patientId in query and body must match" });
+
+            var command = RecordAppointmentComplianceCommandFromResourceAssembler
+                .ToCommandFromResource(resource);
+            var entity = await _commandService.Handle(command);
+            if (entity is null) return BadRequest();
+
+            var result = AppointmentComplianceResourceFromEntityAssembler
+                .ToResourceFromEntity(entity);
+            return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id)
+    {
+        var entity = await _queryService.Handle(new GetAppointmentComplianceByIdQuery(id));
+        if (entity is null) return NotFound();
+        return Ok(AppointmentComplianceResourceFromEntityAssembler.ToResourceFromEntity(entity));
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> GetByPatient([FromQuery] int patientId)
+    {
+        if (patientId <= 0)
+            return BadRequest(new { message = "patientId must be positive" });
+
+        var entities = await _queryService.Handle(new GetAppointmentCompliancesByPatientQuery(patientId));
+        var resources = entities.Select(AppointmentComplianceResourceFromEntityAssembler.ToResourceFromEntity);
+        return Ok(resources);
+    }
+}
+=== ./Interfaces/REST/Controllers/ComplianceController.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Mvc;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
+
+[ApiController]
+[Route("api/v1/compliance")]
+public class ComplianceController : ControllerBase
+{
+    private readonly IMedicationComplianceCommandService _complianceCommandService;
+    private readonly IMedicationComplianceRepository _complianceRepository;
+    private readonly RecordComplianceCommandFromResourceAssembler _commandAssembler;
+    private readonly MedicationComplianceResourceFromEntityAssembler _responseAssembler;
+
+    public ComplianceController(
+        IMedicationComplianceCommandService complianceCommandService,
+        IMedicationComplianceRepository complianceRepository,
+        RecordComplianceCommandFromResourceAssembler commandAssembler,
+        MedicationComplianceResourceFromEntityAssembler responseAssembler)
+    {
+        _complianceCommandService = complianceCommandService;
+        _complianceRepository = complianceRepository;
+        _commandAssembler = commandAssembler;
+        _responseAssembler = responseAssembler;
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<MedicationComplianceResource>> RecordCompliance(
+        [FromQuery] int patientId,
+        [FromBody] RecordComplianceResource resource)
+    {
+        try
+        {
+            var command = _commandAssembler.ToCommand(patientId, resource);
+            var compliance = await _complianceCommandService.HandleAsync(command);
+            var responseResource = _responseAssembler.ToResource(compliance);
+
+            return CreatedAtAction(
+                actionName: nameof(GetComplianceById),
+                routeValues: new { id = compliance.Id },
+                value: responseResource);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<MedicationComplianceResource>> GetComplianceById(int id)
+    {
+        var compliance = await _complianceRepository.FindByIdAsync(id);
+        
+        if (compliance == null)
+        {
+            return NotFound(new { message = $"Compliance record with id {id} not found" });
+        }
+
+        var responseResource = _responseAssembler.ToResource(compliance);
+        return Ok(responseResource);
+    }
+}=== ./Interfaces/REST/Controllers/MedicationsController.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Mvc;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
+
+[ApiController]
+[Route("api/v1/medications")]
+public class MedicationsController : ControllerBase
+{
+    private readonly IMedicationQueryService _medicationQueryService;
+    private readonly INextPendingDoseQueryService _nextPendingDoseQueryService;
+    private readonly IAdherenceHistoryQueryService _adherenceHistoryQueryService;
+    private readonly MedicationResourceFromEntityAssembler _medicationAssembler;
+    private readonly NextPendingDoseResourceFromEntityAssembler _nextDoseAssembler;
+    private readonly AdherenceHistoryResourceFromEntityAssembler _adherenceHistoryAssembler;
+
+    public MedicationsController(
+        IMedicationQueryService medicationQueryService,
+        INextPendingDoseQueryService nextPendingDoseQueryService,
+        IAdherenceHistoryQueryService adherenceHistoryQueryService,
+        MedicationResourceFromEntityAssembler medicationAssembler,
+        NextPendingDoseResourceFromEntityAssembler nextDoseAssembler,
+        AdherenceHistoryResourceFromEntityAssembler adherenceHistoryAssembler)
+    {
+        _medicationQueryService = medicationQueryService;
+        _nextPendingDoseQueryService = nextPendingDoseQueryService;
+        _adherenceHistoryQueryService = adherenceHistoryQueryService;
+        _medicationAssembler = medicationAssembler;
+        _nextDoseAssembler = nextDoseAssembler;
+        _adherenceHistoryAssembler = adherenceHistoryAssembler;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<ICollection<MedicationResource>>> GetMedicationsByPatientId(
+        [FromQuery] int patientId)
+    {
+        try
+        {
+            var query = new GetMedicationsByPatientIdQuery(patientId);
+            var medications = await _medicationQueryService.HandleAsync(query);
+
+            if (!medications.Any())
+                return NotFound(new { message = $"No medications found for patient {patientId}" });
+
+            var resources = _medicationAssembler.ToResources(medications);
+            return Ok(resources);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("next-dose")]
+    public async Task<ActionResult<NextPendingDoseResource>> GetNextPendingDose(
+        [FromQuery] int patientId)
+    {
+        try
+        {
+            var query = new GetNextPendingDoseQuery(patientId);
+            var compliance = await _nextPendingDoseQueryService.HandleAsync(query);
+
+            if (compliance == null)
+                return NotFound(new { message = $"No pending doses found for patient {patientId} today" });
+
+            var resource = _nextDoseAssembler.ToResource(compliance);
+            return Ok(resource);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("adherence-history")]
+    public async Task<ActionResult<AdherenceHistoryResource>> GetAdherenceHistory(
+        [FromQuery] int patientId)
+    {
+        try
+        {
+            var query = new GetAdherenceHistoryQuery(patientId);
+            var adherenceHistory = await _adherenceHistoryQueryService.HandleAsync(query);
+
+            if (adherenceHistory == null)
+                return NotFound(new { message = $"No compliance records found for patient {patientId}" });
+
+            var resource = _adherenceHistoryAssembler.ToResource(adherenceHistory);
+            return Ok(resource);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+}
+=== ./Interfaces/REST/Controllers/StockController.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Queries;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Mvc;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
+
+[ApiController]
+[Route("api/v1/stock")]
+public class StockController : ControllerBase
+{
+    private readonly ILowStockMedicationQueryService _lowStockMedicationQueryService;
+    private readonly LowStockMedicationResourceFromEntityAssembler _lowStockMedicationAssembler;
+
+    public StockController(
+        ILowStockMedicationQueryService lowStockMedicationQueryService,
+        LowStockMedicationResourceFromEntityAssembler lowStockMedicationAssembler)
+    {
+        _lowStockMedicationQueryService = lowStockMedicationQueryService;
+        _lowStockMedicationAssembler = lowStockMedicationAssembler;
+    }
+
+    [HttpGet("low")]
+    public async Task<ActionResult<ICollection<LowStockMedicationResource>>> GetLowStockMedications(
+        [FromQuery] int patientId)
+    {
+        try
+        {
+            var query = new GetLowStockMedicationsQuery(patientId);
+            var medications = await _lowStockMedicationQueryService.HandleAsync(query);
+
+            if (!medications.Any())
+                return NotFound(new { message = $"No low stock medications found for patient {patientId}" });
+
+            var resources = _lowStockMedicationAssembler.ToResources(medications);
+            return Ok(resources);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+}
+=== ./Interfaces/REST/Controllers/SyncController.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Mvc;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
+
+[ApiController]
+[Route("api/v1/sync")]
+public class SyncController : ControllerBase
+{
+    private readonly IOfflineSyncCommandService _syncService;
+
+    public SyncController(IOfflineSyncCommandService syncService)
+    {
+        _syncService = syncService;
+    }
+
+    [HttpPost("batch")]
+    public async Task<IActionResult> ProcessBatch([FromBody] SyncBatchRequestResource resource)
+    {
+        try
+        {
+            if (resource.Items is null || resource.Items.Count == 0)
+                return BadRequest(new { message = "Items list cannot be empty" });
+            if (resource.Items.Count > 100)
+                return BadRequest(new { message = "Batch size cannot exceed 100 items" });
+
+            var command = ProcessSyncBatchCommandFromResourceAssembler.ToCommandFromResource(resource);
+            var results = await _syncService.Handle(command);
+
+            var resultResources = results.Select(r => new SyncBatchResultResource(
+                r.EntityType, r.CreatedId, r.Status, r.ErrorMessage)).ToList();
+
+            return Ok(new
+            {
+                totalProcessed = resultResources.Count,
+                syncedCount = resultResources.Count(r => r.Status == "synced"),
+                failedCount = resultResources.Count(r => r.Status == "failed"),
+                results = resultResources
+            });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+}
+=== ./Interfaces/REST/Resources/AdherenceHistoryResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record WeeklyAdherenceResource(
+    string WeekStart,
+    string WeekEnd,
+    int TakenDoses,
+    int TotalDoses,
+    decimal AdherencePercentage);
+
+public record AdherenceHistoryResource(
+    decimal OverallAdherencePercentage,
+    IReadOnlyCollection<WeeklyAdherenceResource> Weeks);
+=== ./Interfaces/REST/Resources/AppointmentComplianceResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record AppointmentComplianceResource(
+    int Id,
+    int PatientId,
+    int AppointmentId,
+    bool Attended,
+    DateTime RecordedAt,
+    string? Notes
+);
+=== ./Interfaces/REST/Resources/LowStockMedicationResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record LowStockMedicationResource(
+    int MedicationId,
+    string MedicationName,
+    string Dose,
+    int StockCount,
+    string Message
+);
+=== ./Interfaces/REST/Resources/MedicationComplianceResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record RecordComplianceResource(
+    int PatientId,
+    int DoseScheduleId,
+    string Status,
+    string? VideoUrl = null,
+    DateTime? OfflineRecordedAt = null
+);
+
+public record MedicationComplianceResource(
+    int Id,
+    int PatientId,
+    int DoseScheduleId,
+    string Status,
+    DateTime RecordedAt,
+    string? VideoUrl,
+    bool Synced,
+    DateTime? OfflineRecordedAt
+);=== ./Interfaces/REST/Resources/MedicationResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record DoseScheduleResource(
+    int Id,
+    TimeSpan ScheduledTime,
+    bool IsActive
+);
+
+public record MedicationResource(
+    int Id,
+    int PatientId,
+    string Name,
+    string Dose,
+    int FrequencyHours,
+    DateTime StartDate,
+    DateTime? EndDate,
+    int StockCount,
+    bool IsActive,
+    ICollection<DoseScheduleResource> Schedules
+);=== ./Interfaces/REST/Resources/NextPendingDoseResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record NextPendingDoseResource(
+    int DoseScheduleId,
+    string MedicationName,
+    string Dose,
+    string ScheduledTime,
+    int MinutesUntilDose
+);=== ./Interfaces/REST/Resources/RecordAppointmentComplianceResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record RecordAppointmentComplianceResource(
+    int PatientId,
+    int AppointmentId,
+    bool Attended,
+    string? Notes
+);
+=== ./Interfaces/REST/Resources/SyncBatchItemResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record SyncBatchItemResource(
+    int PatientId,
+    string EntityType,
+    string PayloadJson,
+    DateTime QueuedAt
+);
+=== ./Interfaces/REST/Resources/SyncBatchRequestResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record SyncBatchRequestResource(List<SyncBatchItemResource> Items);
+=== ./Interfaces/REST/Resources/SyncBatchResultResource.cs ===
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+public record SyncBatchResultResource(
+    string EntityType,
+    int? CreatedId,
+    string Status,
+    string? ErrorMessage
+);
+=== ./Interfaces/REST/Transform/AdherenceHistoryResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class AdherenceHistoryResourceFromEntityAssembler
+{
+    public AdherenceHistoryResource ToResource(AdherenceHistory adherenceHistory)
+    {
+        var weeks = adherenceHistory.Weeks
+            .Select(week => new WeeklyAdherenceResource(
+                WeekStart: week.WeekStart.ToString("yyyy-MM-dd"),
+                WeekEnd: week.WeekEnd.ToString("yyyy-MM-dd"),
+                TakenDoses: week.TakenDoses,
+                TotalDoses: week.TotalDoses,
+                AdherencePercentage: week.AdherencePercentage))
+            .ToList();
+
+        return new AdherenceHistoryResource(
+            OverallAdherencePercentage: adherenceHistory.OverallAdherencePercentage,
+            Weeks: weeks);
+    }
+}
+=== ./Interfaces/REST/Transform/AppointmentComplianceResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public static class AppointmentComplianceResourceFromEntityAssembler
+{
+    public static AppointmentComplianceResource ToResourceFromEntity(AppointmentCompliance entity)
+    {
+        return new AppointmentComplianceResource(
+            entity.Id,
+            entity.PatientId,
+            entity.AppointmentId,
+            entity.Attended,
+            entity.RecordedAt,
+            entity.Notes);
+    }
+}
+=== ./Interfaces/REST/Transform/LowStockMedicationResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class LowStockMedicationResourceFromEntityAssembler
+{
+    public LowStockMedicationResource ToResource(Medication medication)
+    {
+        return new LowStockMedicationResource(
+            MedicationId: medication.Id,
+            MedicationName: medication.Name,
+            Dose: medication.Dose.Value,
+            StockCount: medication.StockCount,
+            Message: $"Te quedan {medication.StockCount} pastillas de {medication.Name}"
+        );
+    }
+
+    public ICollection<LowStockMedicationResource> ToResources(ICollection<Medication> medications)
+    {
+        return medications
+            .Select(ToResource)
+            .ToList();
+    }
+}
+=== ./Interfaces/REST/Transform/MedicationComplianceResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class MedicationComplianceResourceFromEntityAssembler
+{
+    public MedicationComplianceResource ToResource(MedicationCompliance compliance)
+    {
+        return new MedicationComplianceResource(
+            Id: compliance.Id,
+            PatientId: compliance.PatientId,
+            DoseScheduleId: compliance.DoseScheduleId,
+            Status: compliance.Status,
+            RecordedAt: compliance.RecordedAt,
+            VideoUrl: compliance.VideoUrl,
+            Synced: compliance.Synced,
+            OfflineRecordedAt: compliance.OfflineRecordedAt
+        );
+    }
+
+    public ICollection<MedicationComplianceResource> ToResources(
+        ICollection<MedicationCompliance> compliances)
+    {
+        return compliances
+            .Select(ToResource)
+            .ToList();
+    }
+}=== ./Interfaces/REST/Transform/MedicationResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class MedicationResourceFromEntityAssembler
+{
+    public MedicationResource ToResource(Medication medication)
+    {
+        return new MedicationResource(
+            Id: medication.Id,
+            PatientId: medication.PatientId,
+            Name: medication.Name,
+            Dose: medication.Dose,
+            FrequencyHours: medication.FrequencyHours,
+            StartDate: medication.StartDate,
+            EndDate: medication.EndDate,
+            StockCount: medication.StockCount,
+            IsActive: medication.IsActive,
+            Schedules: medication.Schedules
+                .Select(s => new DoseScheduleResource(
+                    Id: s.Id,
+                    ScheduledTime: s.ScheduledTime,
+                    IsActive: s.IsActive
+                ))
+                .ToList()
+        );
+    }
+
+    public ICollection<MedicationResource> ToResources(ICollection<Medication> medications)
+    {
+        return medications
+            .Select(ToResource)
+            .ToList();
+    }
+}=== ./Interfaces/REST/Transform/NextPendingDoseResourceFromEntityAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class NextPendingDoseResourceFromEntityAssembler
+{
+    public NextPendingDoseResource ToResource(MedicationCompliance compliance)
+    {
+        var medication = compliance.DoseSchedule.Medication;
+        var scheduledTime = compliance.DoseSchedule.ScheduledTime.Value;
+    
+       
+        var limaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time");
+        var nowLima = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, limaTimeZone);
+        var nowTime = nowLima.TimeOfDay;
+     
+        
+        int minutesUntilDose;
+        if (scheduledTime > nowTime)
+        {
+            minutesUntilDose = (int)(scheduledTime - nowTime).TotalMinutes;
+        }
+        else
+        {
+            var timeUntilMidnight = TimeSpan.FromHours(24) - nowTime;
+            minutesUntilDose = (int)(timeUntilMidnight.Add(scheduledTime)).TotalMinutes;
+        }
+
+        return new NextPendingDoseResource(
+            DoseScheduleId: compliance.DoseScheduleId,
+            MedicationName: medication.Name,
+            Dose: medication.Dose.Value,
+            ScheduledTime: scheduledTime.ToString(@"hh\:mm"),
+            MinutesUntilDose: minutesUntilDose
+        );
+    }
+}
+
+=== ./Interfaces/REST/Transform/ProcessSyncBatchCommandFromResourceAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public static class ProcessSyncBatchCommandFromResourceAssembler
+{
+    public static ProcessSyncBatchCommand ToCommandFromResource(SyncBatchRequestResource resource) =>
+        new(resource.Items.Select(i => new SyncQueueItemDto(
+            i.PatientId, i.EntityType, i.PayloadJson, i.QueuedAt)).ToList());
+}
+=== ./Interfaces/REST/Transform/RecordAppointmentComplianceCommandFromResourceAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public static class RecordAppointmentComplianceCommandFromResourceAssembler
+{
+    public static RecordAppointmentComplianceCommand ToCommandFromResource(RecordAppointmentComplianceResource resource)
+    {
+        return new RecordAppointmentComplianceCommand(
+            resource.PatientId,
+            resource.AppointmentId,
+            resource.Attended,
+            resource.Notes);
+    }
+}
+=== ./Interfaces/REST/Transform/RecordComplianceCommandFromResourceAssembler.cs ===
+using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
+
+namespace MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+
+public class RecordComplianceCommandFromResourceAssembler
+{
+    public RecordComplianceCommand ToCommand(int patientId, RecordComplianceResource resource)
+    {
+        return new RecordComplianceCommand(
+            PatientId: patientId,
+            DoseScheduleId: resource.DoseScheduleId,
+            Status: resource.Status,
+            VideoUrl: resource.VideoUrl,
+            OfflineRecordedAt: resource.OfflineRecordedAt
+        );
+    }
+}=== ./Migrations/20260512032958_InitialMigration.cs ===
+﻿using System;
+using Microsoft.EntityFrameworkCore.Migrations;
+using MySql.EntityFrameworkCore.Metadata;
+
+#nullable disable
+
+namespace MediTrack.FollowUpService.API.Migrations
+{
+    /// <inheritdoc />
+    public partial class InitialMigration : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AlterDatabase()
+                .Annotation("MySQL:Charset", "utf8mb4");
+
+            migrationBuilder.CreateTable(
+                name: "medications",
+                columns: table => new
+                {
+                    id = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("MySQL:ValueGenerationStrategy", MySQLValueGenerationStrategy.IdentityColumn),
+                    patient_id = table.Column<int>(type: "int", nullable: false),
+                    name = table.Column<string>(type: "varchar(255)", maxLength: 255, nullable: false),
+                    dose = table.Column<string>(type: "varchar(100)", maxLength: 100, nullable: false),
+                    frequency_hour = table.Column<int>(type: "int", nullable: false),
+                    start_date = table.Column<DateTime>(type: "datetime(6)", nullable: false),
+                    end_date = table.Column<DateTime>(type: "datetime(6)", nullable: true),
+                    stock_count = table.Column<int>(type: "int", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_medications", x => x.id);
+                })
+                .Annotation("MySQL:Charset", "utf8mb4");
+
+            migrationBuilder.CreateTable(
+                name: "dose_schedules",
+                columns: table => new
+                {
+                    id = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("MySQL:ValueGenerationStrategy", MySQLValueGenerationStrategy.IdentityColumn),
+                    medication_id = table.Column<int>(type: "int", nullable: false),
+                    scheduled_time = table.Column<TimeOnly>(type: "time", nullable: false),
+                    is_active = table.Column<bool>(type: "tinyint(1)", nullable: false, defaultValue: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_dose_schedules", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_dose_schedules_medications_medication_id",
+                        column: x => x.medication_id,
+                        principalTable: "medications",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                })
+                .Annotation("MySQL:Charset", "utf8mb4");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_dose_schedules_medication_id",
+                table: "dose_schedules",
+                column: "medication_id");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "dose_schedules");
+
+            migrationBuilder.DropTable(
+                name: "medications");
+        }
+    }
+}
+=== ./Migrations/20260512032958_InitialMigration.Designer.cs ===
+﻿// <auto-generated />
+using System;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+
+#nullable disable
+
+namespace MediTrack.FollowUpService.API.Migrations
+{
+    [DbContext(typeof(FollowUpDbContext))]
+    [Migration("20260512032958_InitialMigration")]
+    partial class InitialMigration
+    {
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
+        {
+#pragma warning disable 612, 618
+            modelBuilder
+                .HasAnnotation("ProductVersion", "8.0.8")
+                .HasAnnotation("Relational:MaxIdentifierLength", 64);
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.DoseSchedule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<int>("MedicationId")
+                        .HasColumnType("int")
+                        .HasColumnName("medication_id");
+
+                    b.Property<TimeOnly>("ScheduledTime")
+                        .HasColumnType("time")
+                        .HasColumnName("scheduled_time");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MedicationId");
+
+                    b.ToTable("dose_schedules", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Dose")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("dose");
+
+                    b.Property<DateTime?>("EndDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("end_date");
+
+                    b.Property<int>("FrequencyHours")
+                        .HasColumnType("int")
+                        .HasColumnName("frequency_hour");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("start_date");
+
+                    b.Property<int>("StockCount")
+                        .HasColumnType("int")
+                        .HasColumnName("stock_count");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("medications", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.DoseSchedule", b =>
+                {
+                    b.HasOne("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", "Medication")
+                        .WithMany("Schedules")
+                        .HasForeignKey("MedicationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Medication");
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Navigation("Schedules");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}
+=== ./Migrations/20260606083817_AddMedicationCompliancesTable.cs ===
+﻿using System;
+using Microsoft.EntityFrameworkCore.Migrations;
+using MySql.EntityFrameworkCore.Metadata;
+
+#nullable disable
+
+namespace MediTrack.FollowUpService.API.Migrations
+{
+    /// <inheritdoc />
+    public partial class AddMedicationCompliancesTable : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AlterColumn<TimeSpan>(
+                name: "scheduled_time",
+                table: "dose_schedules",
+                type: "time(6)",
+                nullable: false,
+                oldClrType: typeof(TimeOnly),
+                oldType: "time");
+
+            migrationBuilder.CreateTable(
+                name: "medication_compliances",
+                columns: table => new
+                {
+                    id = table.Column<int>(type: "int", nullable: false)
+                        .Annotation("MySQL:ValueGenerationStrategy", MySQLValueGenerationStrategy.IdentityColumn),
+                    patient_id = table.Column<int>(type: "int", nullable: false),
+                    dose_schedule_id = table.Column<int>(type: "int", nullable: false),
+                    status = table.Column<string>(type: "varchar(50)", maxLength: 50, nullable: false),
+                    recorded_at = table.Column<DateTime>(type: "datetime(6)", nullable: false),
+                    video_url = table.Column<string>(type: "longtext", nullable: true),
+                    synced = table.Column<bool>(type: "tinyint(1)", nullable: false, defaultValue: true),
+                    offline_recorded_at = table.Column<DateTime>(type: "datetime(6)", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_medication_compliances", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_medication_compliances_dose_schedules_dose_schedule_id",
+                        column: x => x.dose_schedule_id,
+                        principalTable: "dose_schedules",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Restrict);
+                })
+                .Annotation("MySQL:Charset", "utf8mb4");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_medication_compliances_dose_schedule_id",
+                table: "medication_compliances",
+                column: "dose_schedule_id");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropTable(
+                name: "medication_compliances");
+
+            migrationBuilder.AlterColumn<TimeOnly>(
+                name: "scheduled_time",
+                table: "dose_schedules",
+                type: "time",
+                nullable: false,
+                oldClrType: typeof(TimeSpan),
+                oldType: "time(6)");
+        }
+    }
+}
+=== ./Migrations/20260606083817_AddMedicationCompliancesTable.Designer.cs ===
+﻿// <auto-generated />
+using System;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+
+#nullable disable
+
+namespace MediTrack.FollowUpService.API.Migrations
+{
+    [DbContext(typeof(FollowUpDbContext))]
+    [Migration("20260606083817_AddMedicationCompliancesTable")]
+    partial class AddMedicationCompliancesTable
+    {
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
+        {
+#pragma warning disable 612, 618
+            modelBuilder
+                .HasAnnotation("ProductVersion", "8.0.8")
+                .HasAnnotation("Relational:MaxIdentifierLength", 64);
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Dose")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("dose");
+
+                    b.Property<DateTime?>("EndDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("end_date");
+
+                    b.Property<int>("FrequencyHours")
+                        .HasColumnType("int")
+                        .HasColumnName("frequency_hour");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("start_date");
+
+                    b.Property<int>("StockCount")
+                        .HasColumnType("int")
+                        .HasColumnName("stock_count");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("medications", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.MedicationCompliance", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<int>("DoseScheduleId")
+                        .HasColumnType("int")
+                        .HasColumnName("dose_schedule_id");
+
+                    b.Property<DateTime?>("OfflineRecordedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("offline_recorded_at");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("status");
+
+                    b.Property<bool>("Synced")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true)
+                        .HasColumnName("synced");
+
+                    b.Property<string>("VideoUrl")
+                        .HasColumnType("longtext")
+                        .HasColumnName("video_url");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DoseScheduleId");
+
+                    b.ToTable("medication_compliances", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<int>("MedicationId")
+                        .HasColumnType("int")
+                        .HasColumnName("medication_id");
+
+                    b.Property<TimeSpan>("ScheduledTime")
+                        .HasColumnType("time(6)")
+                        .HasColumnName("scheduled_time");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MedicationId");
+
+                    b.ToTable("dose_schedules", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.MedicationCompliance", b =>
+                {
+                    b.HasOne("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", "DoseSchedule")
+                        .WithMany()
+                        .HasForeignKey("DoseScheduleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("DoseSchedule");
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", b =>
+                {
+                    b.HasOne("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", "Medication")
+                        .WithMany("Schedules")
+                        .HasForeignKey("MedicationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Medication");
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Navigation("Schedules");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}
+=== ./Migrations/FollowUpDbContextModelSnapshot.cs ===
+﻿// <auto-generated />
+using System;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+
+#nullable disable
+
+namespace MediTrack.FollowUpService.API.Migrations
+{
+    [DbContext(typeof(FollowUpDbContext))]
+    partial class FollowUpDbContextModelSnapshot : ModelSnapshot
+    {
+        protected override void BuildModel(ModelBuilder modelBuilder)
+        {
+#pragma warning disable 612, 618
+            modelBuilder
+                .HasAnnotation("ProductVersion", "8.0.8")
+                .HasAnnotation("Relational:MaxIdentifierLength", 64);
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Dose")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("varchar(100)")
+                        .HasColumnName("dose");
+
+                    b.Property<DateTime?>("EndDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("end_date");
+
+                    b.Property<int>("FrequencyHours")
+                        .HasColumnType("int")
+                        .HasColumnName("frequency_hour");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("varchar(255)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("start_date");
+
+                    b.Property<int>("StockCount")
+                        .HasColumnType("int")
+                        .HasColumnName("stock_count");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("medications", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.MedicationCompliance", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<int>("DoseScheduleId")
+                        .HasColumnType("int")
+                        .HasColumnName("dose_schedule_id");
+
+                    b.Property<DateTime?>("OfflineRecordedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("offline_recorded_at");
+
+                    b.Property<int>("PatientId")
+                        .HasColumnType("int")
+                        .HasColumnName("patient_id");
+
+                    b.Property<DateTime>("RecordedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("varchar(50)")
+                        .HasColumnName("status");
+
+                    b.Property<bool>("Synced")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true)
+                        .HasColumnName("synced");
+
+                    b.Property<string>("VideoUrl")
+                        .HasColumnType("longtext")
+                        .HasColumnName("video_url");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DoseScheduleId");
+
+                    b.ToTable("medication_compliances", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("tinyint(1)")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<int>("MedicationId")
+                        .HasColumnType("int")
+                        .HasColumnName("medication_id");
+
+                    b.Property<TimeSpan>("ScheduledTime")
+                        .HasColumnType("time(6)")
+                        .HasColumnName("scheduled_time");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MedicationId");
+
+                    b.ToTable("dose_schedules", (string)null);
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.MedicationCompliance", b =>
+                {
+                    b.HasOne("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", "DoseSchedule")
+                        .WithMany()
+                        .HasForeignKey("DoseScheduleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("DoseSchedule");
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Models.DoseSchedule", b =>
+                {
+                    b.HasOne("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", "Medication")
+                        .WithMany("Schedules")
+                        .HasForeignKey("MedicationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Medication");
+                });
+
+            modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.Medication", b =>
+                {
+                    b.Navigation("Schedules");
+                });
+#pragma warning restore 612, 618
+        }
+    }
+}
+=== ./obj/Debug/net8.0/.NETCoreApp,Version=v8.0.AssemblyAttributes.cs ===
+// <autogenerated />
+using System;
+using System.Reflection;
+[assembly: global::System.Runtime.Versioning.TargetFrameworkAttribute(".NETCoreApp,Version=v8.0", FrameworkDisplayName = ".NET 8.0")]
+=== ./obj/Debug/net8.0/MediTrack.FollowUpService.API.AssemblyInfo.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: System.Reflection.AssemblyCompanyAttribute("MediTrack.FollowUpService.API")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f7aa40f80cbcde9e80d7a3b5673d6fd0975d380f")]
+[assembly: System.Reflection.AssemblyProductAttribute("MediTrack.FollowUpService.API")]
+[assembly: System.Reflection.AssemblyTitleAttribute("MediTrack.FollowUpService.API")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+
+// Generado por la clase WriteCodeFragment de MSBuild.
+
+=== ./obj/Debug/net8.0/MediTrack.FollowUpService.API.GlobalUsings.g.cs ===
+// <auto-generated/>
+global using global::Microsoft.AspNetCore.Builder;
+global using global::Microsoft.AspNetCore.Hosting;
+global using global::Microsoft.AspNetCore.Http;
+global using global::Microsoft.AspNetCore.Routing;
+global using global::Microsoft.Extensions.Configuration;
+global using global::Microsoft.Extensions.DependencyInjection;
+global using global::Microsoft.Extensions.Hosting;
+global using global::Microsoft.Extensions.Logging;
+global using global::System;
+global using global::System.Collections.Generic;
+global using global::System.IO;
+global using global::System.Linq;
+global using global::System.Net.Http;
+global using global::System.Net.Http.Json;
+global using global::System.Threading;
+global using global::System.Threading.Tasks;
+=== ./obj/Debug/net8.0/MediTrack.FollowUpService.API.MvcApplicationPartsAssemblyInfo.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated by a tool.
+//
+//     Changes to this file may cause incorrect behavior and will be lost if
+//     the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+using System;
+using System.Reflection;
+
+[assembly: Microsoft.AspNetCore.Mvc.ApplicationParts.ApplicationPartAttribute("Microsoft.AspNetCore.OpenApi")]
+[assembly: Microsoft.AspNetCore.Mvc.ApplicationParts.ApplicationPartAttribute("Swashbuckle.AspNetCore.Annotations")]
+[assembly: Microsoft.AspNetCore.Mvc.ApplicationParts.ApplicationPartAttribute("Swashbuckle.AspNetCore.SwaggerGen")]
+
+// Generado por la clase WriteCodeFragment de MSBuild.
+
+=== ./Program.cs ===
+using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
+using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
+using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Infrastructure.Messaging;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// Database context
+builder.Services.AddDbContext<FollowUpDbContext>(options =>
+    options.UseMySQL(
+        builder.Configuration.GetConnectionString("DefaultConnection")!
+    ));
+
+// Dependency Injection for DDD layers
+builder.Services.AddScoped<IMedicationRepository, MedicationRepository>();
+builder.Services.AddScoped<IMedicationQueryService, MedicationQueryService>();
+builder.Services.AddScoped<INextPendingDoseQueryService, NextPendingDoseQueryService>();
+builder.Services.AddScoped<IAdherenceHistoryQueryService, AdherenceHistoryQueryService>();
+builder.Services.AddScoped<ILowStockMedicationQueryService, LowStockMedicationQueryService>();
+builder.Services.AddScoped<MedicationResourceFromEntityAssembler>();
+builder.Services.AddScoped<NextPendingDoseResourceFromEntityAssembler>();
+builder.Services.AddScoped<AdherenceHistoryResourceFromEntityAssembler>();
+builder.Services.AddScoped<LowStockMedicationResourceFromEntityAssembler>();
+builder.Services.AddScoped<IMedicationComplianceRepository, MedicationComplianceRepository>();
+builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
+builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
+builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
+builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
+builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
+builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
+builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueRepository>();
+builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
+    db.Database.Migrate(); 
+}
+app.UseAuthorization();
+app.MapControllers();
+app.Run();

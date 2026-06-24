@@ -13,6 +13,9 @@ public class FollowUpDbContext : DbContext
     public DbSet<Medication> Medications { get; set; } = null!;
     public DbSet<DoseSchedule> DoseSchedules { get; set; } = null!;
     public DbSet<MedicationCompliance> MedicationCompliances { get; set; } = null!;
+    public DbSet<AppointmentCompliance> AppointmentCompliances { get; set; } = null!;
+    public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
+    public DbSet<AppointmentReference> AppointmentReferences { get; set; } = null!;
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -24,7 +27,7 @@ public class FollowUpDbContext : DbContext
             
             entity.Property(e => e.Id)
                 .HasColumnName("id")
-                .ValueGeneratedOnAdd();
+                .ValueGeneratedNever();
             
             entity.Property(e => e.PatientId)
                 .HasColumnName("patient_id")
@@ -58,6 +61,10 @@ public class FollowUpDbContext : DbContext
                 .HasColumnName("stock_count")
                 .IsRequired();
 
+            entity.Property(e => e.StockAlertThreshold)
+                .HasColumnName("stock_alert_threshold")
+                .HasDefaultValue(0);
+
             entity.HasMany(e => e.Schedules)
                 .WithOne(s => s.Medication)
                 .HasForeignKey(s => s.MedicationId)
@@ -71,7 +78,7 @@ public class FollowUpDbContext : DbContext
             
             entity.Property(e => e.Id)
                 .HasColumnName("id")
-                .ValueGeneratedOnAdd();
+                .ValueGeneratedNever();
             
             entity.Property(e => e.MedicationId)
                 .HasColumnName("medication_id")
@@ -134,5 +141,78 @@ public class FollowUpDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
         
+        modelBuilder.Entity<AppointmentCompliance>(entity =>
+        {
+            entity.ToTable("appointment_compliances");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.AppointmentId)
+                .HasColumnName("appointment_id")
+                .IsRequired();
+
+            entity.Property(e => e.Attended)
+                .HasColumnName("attended")
+                .IsRequired();
+
+            entity.Property(e => e.RecordedAt)
+                .HasColumnName("recorded_at")
+                .IsRequired();
+
+            entity.Property(e => e.Notes)
+                .HasColumnName("notes");
+        });
+
+        modelBuilder.Entity<OfflineSyncQueueItem>(entity =>
+        {
+            entity.ToTable("offline_sync_queue");
+            entity.HasKey(e => e.Id);
+
+            entity.Property(e => e.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(e => e.PatientId)
+                .HasColumnName("patient_id")
+                .IsRequired();
+
+            entity.Property(e => e.EntityType)
+                .HasColumnName("entity_type")
+                .IsRequired();
+
+            entity.Property(e => e.Payload)
+                .HasColumnName("payload")
+                .HasColumnType("json")
+                .IsRequired();
+
+            entity.Property(e => e.QueuedAt)
+                .HasColumnName("queued_at")
+                .IsRequired();
+
+            entity.Property(e => e.SyncedAt)
+                .HasColumnName("synced_at");
+
+            entity.Property(e => e.Status)
+                .HasColumnName("status")
+                .HasMaxLength(50)
+                .HasDefaultValue("pending");
+        });
+
+        modelBuilder.Entity<AppointmentReference>(entity =>
+        {
+            entity.ToTable("appointment_reference");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
+            entity.Property(e => e.PatientId).HasColumnName("patient_id").IsRequired();
+            entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at").IsRequired();
+        });
+
     }
 }

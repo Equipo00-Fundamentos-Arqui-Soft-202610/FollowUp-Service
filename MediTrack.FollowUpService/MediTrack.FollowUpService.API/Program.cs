@@ -45,8 +45,11 @@ builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueReposito
 builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
 builder.Services.AddScoped<IPrescriptionCreatedEventHandler, PrescriptionCreatedEventHandler>();
 builder.Services.AddScoped<IAppointmentScheduledEventHandler, AppointmentScheduledEventHandler>();
+builder.Services.AddScoped<IMedicationCancelledEventHandler, MedicationCancelledEventHandler>();
+builder.Services.AddScoped<IMedicationUpdatedEventHandler, MedicationUpdatedEventHandler>();
 builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
 builder.Services.AddHostedService<AppointmentScheduledConsumer>();
+builder.Services.AddHostedService<MedicationEventsConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
 var app = builder.Build();
 

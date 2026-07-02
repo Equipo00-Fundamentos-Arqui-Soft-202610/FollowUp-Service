@@ -26,7 +26,7 @@ public class AdherenceHistoryQueryService : IAdherenceHistoryQueryService
 
         var compliances = await _complianceRepository.FindByPatientIdAsync(query.PatientId);
         if (!compliances.Any())
-            return null;
+            return new AdherenceHistory(OverallAdherencePercentage: 0m, Weeks: Array.Empty<WeeklyAdherence>());
 
         var medications = await _medicationRepository.FindByPatientIdAsync(query.PatientId);
 

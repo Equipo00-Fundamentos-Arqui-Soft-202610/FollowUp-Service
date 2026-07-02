@@ -2,12 +2,14 @@ using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Infrastructure.BlobStorage;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -15,7 +17,14 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.MapType<IFormFile>(() => new Microsoft.OpenApi.Models.OpenApiSchema
+    {
+        Type = "string",
+        Format = "binary"
+    });
+});
 
 // Database context
 builder.Services.AddDbContext<FollowUpDbContext>(options =>
@@ -51,6 +60,13 @@ builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
 builder.Services.AddHostedService<AppointmentScheduledConsumer>();
 builder.Services.AddHostedService<MedicationEventsConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
+builder.Services.Configure<AzureBlobOptions>(
+    builder.Configuration.GetSection(AzureBlobOptions.SectionName));
+builder.Services.AddSingleton<IBlobStorageService, AzureBlobStorageService>();
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 100 * 1024 * 1024;
+});
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

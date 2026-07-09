@@ -3,10 +3,12 @@ using MediTrack.FollowUpService.API.Domain.Model.Commands;
 using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/v1/compliance")]
 public class ComplianceController : ControllerBase
 {
@@ -63,7 +65,7 @@ public class ComplianceController : ControllerBase
         return Ok(responseResource);
     }
     
-    [HttpGet("recent")]
+    [HttpGet]
     public async Task<ActionResult<IEnumerable<MedicationComplianceResource>>> GetRecentCompliance(
         [FromQuery] int patientId,
         [FromQuery] int limit = 10)

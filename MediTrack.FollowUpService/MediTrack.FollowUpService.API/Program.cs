@@ -1,3 +1,4 @@
+using System.Text;
 using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
@@ -9,8 +10,10 @@ using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,6 +28,29 @@ builder.Services.AddSwaggerGen(c =>
         Format = "binary"
     });
 });
+
+// JWT authentication
+var jwtSection = builder.Configuration.GetSection("Jwt");
+var signingKey = jwtSection["Key"]
+    ?? throw new InvalidOperationException("Falta la clave de firma JWT en 'Jwt:Key'.");
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtSection["Issuer"],
+            ValidateAudience = true,
+            ValidAudience = jwtSection["Audience"],
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // Database context
 builder.Services.AddDbContext<FollowUpDbContext>(options =>
@@ -80,6 +106,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
     db.Database.Migrate(); 
 }
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.Run();

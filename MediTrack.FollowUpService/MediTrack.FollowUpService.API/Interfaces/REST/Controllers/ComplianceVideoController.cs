@@ -1,10 +1,12 @@
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/v1/compliance/video")]
 public class ComplianceVideoController : ControllerBase
 {

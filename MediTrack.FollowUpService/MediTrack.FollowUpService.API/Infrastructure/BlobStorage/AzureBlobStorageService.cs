@@ -14,31 +14,60 @@ public sealed class AzureBlobOptions
 
 public class AzureBlobStorageService : IBlobStorageService
 {
-    private readonly BlobContainerClient _containerClient;
+    private readonly BlobContainerClient? _containerClient;
     private readonly ILogger<AzureBlobStorageService> _logger;
+    private readonly bool _useAzure;
+    private readonly string _localFallbackPath = string.Empty;
 
     public AzureBlobStorageService(IOptions<AzureBlobOptions> options,
         ILogger<AzureBlobStorageService> logger)
     {
         _logger = logger;
-        var blobServiceClient = new BlobServiceClient(options.Value.ConnectionString);
-        _containerClient = blobServiceClient.GetBlobContainerClient(options.Value.ContainerName);
+        _useAzure = !string.IsNullOrWhiteSpace(options.Value.ConnectionString);
+
+        if (_useAzure)
+        {
+            var blobServiceClient = new BlobServiceClient(options.Value.ConnectionString);
+            _containerClient = blobServiceClient.GetBlobContainerClient(options.Value.ContainerName);
+            _logger.LogInformation("Azure Blob Storage configured. Container: {Container}", options.Value.ContainerName);
+        }
+        else
+        {
+            _localFallbackPath = Path.Combine(AppContext.BaseDirectory, "blob-storage");
+            Directory.CreateDirectory(_localFallbackPath);
+            _logger.LogWarning(
+                "Azure Blob Storage not configured (ConnectionString is empty). " +
+                "Falling back to local storage at {Path}.", _localFallbackPath);
+        }
     }
 
     public async Task<string> UploadAsync(Stream fileStream, string fileName, string contentType)
     {
         var blobName = $"{Guid.NewGuid()}/{fileName}";
-        var blobClient = _containerClient.GetBlobClient(blobName);
 
-        _logger.LogInformation("Uploading video to Azure Blob: {BlobName}", blobName);
-
-        await blobClient.UploadAsync(fileStream, new BlobHttpHeaders
+        if (_useAzure && _containerClient != null)
         {
-            ContentType = contentType
-        });
+            var blobClient = _containerClient.GetBlobClient(blobName);
+            _logger.LogInformation("Uploading video to Azure Blob: {BlobName}", blobName);
 
-        _logger.LogInformation("Video uploaded successfully: {Uri}", blobClient.Uri);
+            await blobClient.UploadAsync(fileStream, new BlobHttpHeaders
+            {
+                ContentType = contentType
+            });
 
-        return blobClient.Uri.ToString();
+            _logger.LogInformation("Video uploaded successfully: {Uri}", blobClient.Uri);
+            return blobClient.Uri.ToString();
+        }
+
+        // Local filesystem fallback
+        var localDir = Path.Combine(_localFallbackPath, Path.GetDirectoryName(blobName) ?? "");
+        Directory.CreateDirectory(localDir);
+
+        var localPath = Path.Combine(_localFallbackPath, blobName.Replace('/', Path.DirectorySeparatorChar));
+        await using var fileStream2 = new FileStream(localPath, FileMode.Create, FileAccess.Write);
+        await fileStream.CopyToAsync(fileStream2);
+
+        _logger.LogInformation("Video saved locally: {Path}", localPath);
+        return localPath;
     }
 }

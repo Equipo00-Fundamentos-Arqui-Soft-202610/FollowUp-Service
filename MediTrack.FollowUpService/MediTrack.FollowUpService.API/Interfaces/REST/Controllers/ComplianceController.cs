@@ -1,5 +1,6 @@
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Interfaces.REST.Filters;
 using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.AspNetCore.Mvc;
@@ -30,6 +31,7 @@ public class ComplianceController : ControllerBase
     }
 
     [HttpPost]
+    [TypeFilter(typeof(IdempotencyFilterAttribute))]
     public async Task<ActionResult<MedicationComplianceResource>> RecordCompliance(
         [FromQuery] int patientId,
         [FromBody] RecordComplianceResource resource)

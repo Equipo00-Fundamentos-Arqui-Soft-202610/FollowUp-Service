@@ -2,6 +2,9 @@ using System.Text;
 using System.Text.Json;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.OutboundEvents;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -42,8 +45,29 @@ public class AppointmentScheduledConsumer : BackgroundService
 
         _channel.ExchangeDeclare(_options.ExchangeName, ExchangeType.Topic, durable: true);
 
+        var dlxName = "followup-service.dlx";
+        var dlqName = "followup-service.dlq";
+        _channel.ExchangeDeclare(dlxName, ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare(dlqName, durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind(dlqName, dlxName, routingKey: "");
+
         var queueName = "followup-service.appointment-scheduled";
-        _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false);
+        var queueArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", dlxName } };
+        try
+        {
+            _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false, arguments: queueArgs);
+        }
+        catch (RabbitMQ.Client.Exceptions.OperationInterruptedException)
+        {
+            _logger.LogWarning("La cola {QueueName} existía con argumentos distintos; se recrea con soporte de DLQ.", queueName);
+            _channel = _connection!.CreateModel();
+            _channel.ExchangeDeclare(_options.ExchangeName, ExchangeType.Topic, durable: true);
+            _channel.ExchangeDeclare(dlxName, ExchangeType.Fanout, durable: true);
+            _channel.QueueDeclare(dlqName, durable: true, exclusive: false, autoDelete: false);
+            _channel.QueueBind(dlqName, dlxName, routingKey: "");
+            _channel.QueueDelete(queueName);
+            _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false, arguments: queueArgs);
+        }
         _channel.QueueBind(queueName, _options.ExchangeName, routingKey: "CitaAgendada");
 
         var consumer = new EventingBasicConsumer(_channel);
@@ -56,16 +80,42 @@ public class AppointmentScheduledConsumer : BackgroundService
                 if (evt is not null)
                 {
                     using var scope = _scopeFactory.CreateScope();
+                    var context = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
+
+                    var alreadyProcessed = await context.ProcessedEvents.AnyAsync(e => e.EventId == evt.EventId);
+                    if (alreadyProcessed)
+                    {
+                        _logger.LogInformation("Evento {EventId} ya procesado; se omite.", evt.EventId);
+                        _channel.BasicAck(ea.DeliveryTag, multiple: false);
+                        return;
+                    }
+
                     var handler = scope.ServiceProvider
                         .GetRequiredService<IAppointmentScheduledEventHandler>();
                     await handler.HandleAsync(evt);
+
+                    context.ProcessedEvents.Add(new ProcessedEvent
+                    {
+                        EventId = evt.EventId,
+                        EventType = "CitaAgendada",
+                        ProcessedAtUtc = DateTime.UtcNow
+                    });
+                    await context.SaveChangesAsync();
                 }
                 _channel.BasicAck(ea.DeliveryTag, multiple: false);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to process AppointmentScheduled event");
-                _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: true);
+                if (ea.Redelivered)
+                {
+                    _logger.LogError(ex, "Error persistente procesando evento; se envía a DLQ.");
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                }
+                else
+                {
+                    _logger.LogWarning(ex, "Error procesando evento; se reintenta una vez.");
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: true);
+                }
             }
         };
 

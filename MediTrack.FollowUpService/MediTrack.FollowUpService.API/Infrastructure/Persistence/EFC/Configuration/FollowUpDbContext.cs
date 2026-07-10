@@ -1,13 +1,14 @@
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
 using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
 using MediTrack.FollowUpService.API.Domain.Models;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using Microsoft.EntityFrameworkCore;
 
 namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
 
 public class FollowUpDbContext : DbContext
 {
-    public FollowUpDbContext(DbContextOptions<FollowUpDbContext> options) 
+    public FollowUpDbContext(DbContextOptions<FollowUpDbContext> options)
         : base(options) { }
 
     public DbSet<Medication> Medications { get; set; } = null!;
@@ -16,6 +17,9 @@ public class FollowUpDbContext : DbContext
     public DbSet<AppointmentCompliance> AppointmentCompliances { get; set; } = null!;
     public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
     public DbSet<AppointmentReference> AppointmentReferences { get; set; } = null!;
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -234,5 +238,49 @@ public class FollowUpDbContext : DbContext
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at").IsRequired();
         });
 
+        modelBuilder.Entity<ProcessedEvent>(entity =>
+        {
+            entity.ToTable("processed_events");
+
+            entity.HasKey(e => e.EventId);
+
+            entity.Property(e => e.EventId)
+                .HasConversion(g => g.ToByteArray(), b => new Guid(b))
+                .HasColumnType("binary(16)");
+
+            entity.Property(e => e.EventType)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.Property(e => e.ProcessedAtUtc)
+                .IsRequired();
+        });
+
+        modelBuilder.Entity<OutboxMessage>(entity =>
+        {
+            entity.ToTable("outbox_message");
+            entity.HasKey(m => m.Id);
+
+            entity.Property(m => m.Id)
+                .HasConversion(g => g.ToByteArray(), b => new Guid(b))
+                .HasColumnType("binary(16)");
+
+            entity.Property(m => m.EventType).HasMaxLength(100).IsRequired();
+            entity.Property(m => m.Payload).HasColumnType("json").IsRequired();
+            entity.Property(m => m.OccurredAtUtc).IsRequired();
+            entity.Property(m => m.LastError).HasMaxLength(500);
+
+            entity.HasIndex(m => m.ProcessedAtUtc);
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.ToTable("idempotency_records");
+            entity.HasKey(e => e.Key);
+            entity.Property(e => e.Key).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Endpoint).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.ResponseBody).HasColumnType("json").IsRequired();
+            entity.Property(e => e.CreatedAtUtc).IsRequired();
+        });
     }
 }

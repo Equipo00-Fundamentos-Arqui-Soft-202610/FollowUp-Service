@@ -18,6 +18,7 @@ public class FollowUpDbContext : DbContext
     public DbSet<OfflineSyncQueueItem> OfflineSyncQueueItems { get; set; } = null!;
     public DbSet<AppointmentReference> AppointmentReferences { get; set; } = null!;
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -214,6 +215,24 @@ public class FollowUpDbContext : DbContext
             entity.Property(e => e.Id).HasColumnName("id").ValueGeneratedNever();
             entity.Property(e => e.PatientId).HasColumnName("patient_id").IsRequired();
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at").IsRequired();
+        });
+
+        modelBuilder.Entity<ProcessedEvent>(entity =>
+        {
+            entity.ToTable("processed_events");
+
+            entity.HasKey(e => e.EventId);
+
+            entity.Property(e => e.EventId)
+                .HasConversion(g => g.ToByteArray(), b => new Guid(b))
+                .HasColumnType("binary(16)");
+
+            entity.Property(e => e.EventType)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.Property(e => e.ProcessedAtUtc)
+                .IsRequired();
         });
 
         modelBuilder.Entity<OutboxMessage>(entity =>

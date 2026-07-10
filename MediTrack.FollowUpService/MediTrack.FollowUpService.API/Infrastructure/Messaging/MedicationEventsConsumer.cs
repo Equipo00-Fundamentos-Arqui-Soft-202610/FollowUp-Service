@@ -2,6 +2,9 @@ using System.Text;
 using System.Text.Json;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.OutboundEvents;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -55,15 +58,32 @@ public class MedicationEventsConsumer : BackgroundService
                 var json = Encoding.UTF8.GetString(ea.Body.ToArray());
 
                 using var scope = _scopeFactory.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
 
                 if (ea.RoutingKey == "MedicationCancelled")
                 {
                     var evt = JsonSerializer.Deserialize<MedicationCancelledEvent>(json);
                     if (evt is not null)
                     {
+                        var alreadyProcessed = await context.ProcessedEvents.AnyAsync(e => e.EventId == evt.EventId);
+                        if (alreadyProcessed)
+                        {
+                            _logger.LogInformation("Evento {EventId} ya procesado; se omite.", evt.EventId);
+                            _channel.BasicAck(ea.DeliveryTag, multiple: false);
+                            return;
+                        }
+
                         var handler = scope.ServiceProvider
                             .GetRequiredService<IMedicationCancelledEventHandler>();
                         await handler.HandleAsync(evt);
+
+                        context.ProcessedEvents.Add(new ProcessedEvent
+                        {
+                            EventId = evt.EventId,
+                            EventType = "MedicationCancelled",
+                            ProcessedAtUtc = DateTime.UtcNow
+                        });
+                        await context.SaveChangesAsync();
                     }
                 }
                 else if (ea.RoutingKey == "MedicationUpdated")
@@ -71,9 +91,25 @@ public class MedicationEventsConsumer : BackgroundService
                     var evt = JsonSerializer.Deserialize<MedicationUpdatedEvent>(json);
                     if (evt is not null)
                     {
+                        var alreadyProcessed = await context.ProcessedEvents.AnyAsync(e => e.EventId == evt.EventId);
+                        if (alreadyProcessed)
+                        {
+                            _logger.LogInformation("Evento {EventId} ya procesado; se omite.", evt.EventId);
+                            _channel.BasicAck(ea.DeliveryTag, multiple: false);
+                            return;
+                        }
+
                         var handler = scope.ServiceProvider
                             .GetRequiredService<IMedicationUpdatedEventHandler>();
                         await handler.HandleAsync(evt);
+
+                        context.ProcessedEvents.Add(new ProcessedEvent
+                        {
+                            EventId = evt.EventId,
+                            EventType = "MedicationUpdated",
+                            ProcessedAtUtc = DateTime.UtcNow
+                        });
+                        await context.SaveChangesAsync();
                     }
                 }
 

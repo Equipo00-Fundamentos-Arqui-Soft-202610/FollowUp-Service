@@ -64,7 +64,8 @@ public sealed class OutboxDispatcherHostedService : BackgroundService
             HostName = rabbitMqSection["Host"] ?? "localhost",
             Port = rabbitMqSection.GetValue("Port", 5672),
             UserName = rabbitMqSection["UserName"] ?? "guest",
-            Password = rabbitMqSection["Password"] ?? "guest"
+            Password = rabbitMqSection["Password"] ?? "guest",
+            VirtualHost = rabbitMqSection["VirtualHost"] ?? "/"
         };
         var exchangeName = rabbitMqSection["ExchangeName"] ?? "meditrack.events";
 

@@ -121,4 +121,5 @@ using (var scope = app.Services.CreateScope())
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+// no-op: commit de prueba para verificar auto-deploy de Render
 app.Run();

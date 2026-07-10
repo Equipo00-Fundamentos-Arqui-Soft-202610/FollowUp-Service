@@ -2,6 +2,9 @@ using System.Text;
 using System.Text.Json;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.OutboundEvents;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
+using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -56,9 +59,27 @@ public class PrescriptionCreatedConsumer : BackgroundService
                 if (evt is not null)
                 {
                     using var scope = _scopeFactory.CreateScope();
+                    var context = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
+
+                    var alreadyProcessed = await context.ProcessedEvents.AnyAsync(e => e.EventId == evt.EventId);
+                    if (alreadyProcessed)
+                    {
+                        _logger.LogInformation("Evento {EventId} ya procesado; se omite.", evt.EventId);
+                        _channel.BasicAck(ea.DeliveryTag, multiple: false);
+                        return;
+                    }
+
                     var handler = scope.ServiceProvider
                         .GetRequiredService<IPrescriptionCreatedEventHandler>();
                     await handler.HandleAsync(evt);
+
+                    context.ProcessedEvents.Add(new ProcessedEvent
+                    {
+                        EventId = evt.EventId,
+                        EventType = "PrescriptionCreated",
+                        ProcessedAtUtc = DateTime.UtcNow
+                    });
+                    await context.SaveChangesAsync();
                 }
                 _channel.BasicAck(ea.DeliveryTag, multiple: false);
             }

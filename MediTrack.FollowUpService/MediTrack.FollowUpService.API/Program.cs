@@ -95,7 +95,11 @@ builder.Services.AddScoped<IMedicationComplianceRepository, MedicationCompliance
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
-builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+// Patrón Outbox: los eventos se persisten en la misma BD que el cambio de
+// dominio y se entregan a RabbitMQ en background (no se pierden si el broker
+// está caído justo al publicar).
+builder.Services.AddScoped<IEventPublisher, OutboxEventPublisher>();
+builder.Services.AddHostedService<OutboxDispatcherHostedService>();
 builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
 builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
 builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
@@ -109,9 +113,9 @@ builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
 builder.Services.AddHostedService<AppointmentScheduledConsumer>();
 builder.Services.AddHostedService<MedicationEventsConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
-builder.Services.Configure<AzureBlobOptions>(
-    builder.Configuration.GetSection(AzureBlobOptions.SectionName));
-builder.Services.AddSingleton<IBlobStorageService, AzureBlobStorageService>();
+builder.Services.Configure<R2BlobOptions>(
+    builder.Configuration.GetSection(R2BlobOptions.SectionName));
+builder.Services.AddSingleton<IBlobStorageService, R2BlobStorageService>();
 
 // Flujo de validación de evidencia en video (MediTrack AI Validator — Prototype):
 // almacenamiento temporal privado + limpieza periódica de videos vencidos (>24h).

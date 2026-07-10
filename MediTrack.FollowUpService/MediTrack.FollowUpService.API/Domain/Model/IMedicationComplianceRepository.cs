@@ -22,4 +22,5 @@ public interface IMedicationComplianceRepository
     /// usado para el upsert al volver a grabar el video en vez de acumular filas
     /// duplicadas.
     Task<MedicationCompliance?> FindTodayValidationAttemptAsync(int patientId, int doseScheduleId, DateTime today);
+    Task<ICollection<MedicationCompliance>> FindAllAsync();
 }

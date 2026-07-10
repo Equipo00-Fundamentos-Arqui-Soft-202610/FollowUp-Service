@@ -1,4 +1,5 @@
 using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
 using MediTrack.FollowUpService.API.Domain.Model.Commands;
 using MediTrack.FollowUpService.API.Interfaces.REST.Filters;
 using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
@@ -90,4 +91,33 @@ public class ComplianceController : ControllerBase
         var resources = _responseAssembler.ToResources(recentCompliances);
         return Ok(resources);
     }
+
+    [HttpGet("stats/by-medication")]
+    public async Task<ActionResult<IEnumerable<MedicationComplianceByMedicationResource>>> GetComplianceStatsByMedication(
+        [FromQuery] int? patientId)
+    {
+        var compliances = patientId.HasValue
+            ? await _complianceRepository.FindByPatientIdAsync(patientId.Value)
+            : await _complianceRepository.FindAllAsync();
+
+        var stats = compliances
+            .Where(mc => mc.DoseSchedule?.Medication != null)
+            .GroupBy(mc => mc.DoseSchedule.Medication.Name)
+            .Select(g => new MedicationComplianceByMedicationResource(
+                g.Key,
+                g.Count(),
+                g.Count(mc => mc.Status.IsTaken),
+                g.Count(mc => !mc.Status.IsTaken),
+                g.Count() > 0 ? Math.Round((double)g.Count(mc => mc.Status.IsTaken) / g.Count() * 100, 2) : 0))
+            .ToList();
+
+        return Ok(stats);
+    }
 }
+
+public record MedicationComplianceByMedicationResource(
+    string MedicationName,
+    int TotalDoses,
+    int TakenDoses,
+    int MissedDoses,
+    double ComplianceRate);

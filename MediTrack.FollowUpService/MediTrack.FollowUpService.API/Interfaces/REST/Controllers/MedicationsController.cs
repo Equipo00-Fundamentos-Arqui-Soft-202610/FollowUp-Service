@@ -18,6 +18,7 @@ public class MedicationsController : ControllerBase
     private readonly MedicationResourceFromEntityAssembler _medicationAssembler;
     private readonly NextPendingDoseResourceFromEntityAssembler _nextDoseAssembler;
     private readonly AdherenceHistoryResourceFromEntityAssembler _adherenceHistoryAssembler;
+    private readonly ILogger<MedicationsController> _logger;
 
     public MedicationsController(
         IMedicationQueryService medicationQueryService,
@@ -25,7 +26,8 @@ public class MedicationsController : ControllerBase
         IAdherenceHistoryQueryService adherenceHistoryQueryService,
         MedicationResourceFromEntityAssembler medicationAssembler,
         NextPendingDoseResourceFromEntityAssembler nextDoseAssembler,
-        AdherenceHistoryResourceFromEntityAssembler adherenceHistoryAssembler)
+        AdherenceHistoryResourceFromEntityAssembler adherenceHistoryAssembler,
+        ILogger<MedicationsController> logger)
     {
         _medicationQueryService = medicationQueryService;
         _nextPendingDoseQueryService = nextPendingDoseQueryService;
@@ -33,6 +35,7 @@ public class MedicationsController : ControllerBase
         _medicationAssembler = medicationAssembler;
         _nextDoseAssembler = nextDoseAssembler;
         _adherenceHistoryAssembler = adherenceHistoryAssembler;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -66,9 +69,15 @@ public class MedicationsController : ControllerBase
             var compliance = await _nextPendingDoseQueryService.HandleAsync(query);
 
             if (compliance == null)
+            {
+                _logger.LogWarning("[next-dose] patientId={PatientId}: 404 — no pending doses found today.", patientId);
                 return NotFound(new { message = $"No pending doses found for patient {patientId} today" });
+            }
 
             var resource = _nextDoseAssembler.ToResource(compliance);
+            _logger.LogInformation(
+                "[next-dose] patientId={PatientId}: respuesta completa -> {@Resource}",
+                patientId, resource);
             return Ok(resource);
         }
         catch (ArgumentException ex)

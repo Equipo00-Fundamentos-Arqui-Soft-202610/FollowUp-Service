@@ -19,6 +19,7 @@ public class FollowUpDbContext : DbContext
     public DbSet<AppointmentReference> AppointmentReferences { get; set; } = null!;
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<ProcessedEvent> ProcessedEvents => Set<ProcessedEvent>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -250,6 +251,16 @@ public class FollowUpDbContext : DbContext
             entity.Property(m => m.LastError).HasMaxLength(500);
 
             entity.HasIndex(m => m.ProcessedAtUtc);
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.ToTable("idempotency_records");
+            entity.HasKey(e => e.Key);
+            entity.Property(e => e.Key).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Endpoint).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.ResponseBody).HasColumnType("json").IsRequired();
+            entity.Property(e => e.CreatedAtUtc).IsRequired();
         });
     }
 }

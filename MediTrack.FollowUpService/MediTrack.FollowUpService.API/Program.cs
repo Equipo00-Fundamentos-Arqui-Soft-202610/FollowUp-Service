@@ -1,21 +1,64 @@
+using System.Text;
 using MediTrack.FollowUpService.API.Application.Internal.CommandServices;
 using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
+using MediTrack.FollowUpService.API.Infrastructure.BlobStorage;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using MediTrack.FollowUpService.API.Infrastructure.Security;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.MapType<IFormFile>(() => new Microsoft.OpenApi.Models.OpenApiSchema
+    {
+        Type = "string",
+        Format = "binary"
+    });
+});
+
+// JWT authentication -- valores reales vía user-secrets en desarrollo, vía
+// variables de entorno en producción. Nunca en appsettings.json (ver README).
+builder.Services.AddOptions<JwtOptions>()
+    .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Key), "Jwt:Key es obligatorio")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Issuer), "Jwt:Issuer es obligatorio")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Audience), "Jwt:Audience es obligatorio")
+    .ValidateOnStart();
+
+var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
+    ?? throw new InvalidOperationException("Falta la sección 'Jwt' en la configuración.");
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Key)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // Database context
 builder.Services.AddDbContext<FollowUpDbContext>(options =>
@@ -37,7 +80,11 @@ builder.Services.AddScoped<IMedicationComplianceRepository, MedicationCompliance
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
-builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+// Patrón Outbox: los eventos se persisten en la misma BD que el cambio de
+// dominio y se entregan a RabbitMQ en background (no se pierden si el broker
+// está caído justo al publicar).
+builder.Services.AddScoped<IEventPublisher, OutboxEventPublisher>();
+builder.Services.AddHostedService<OutboxDispatcherHostedService>();
 builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
 builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
 builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();
@@ -45,9 +92,19 @@ builder.Services.AddScoped<IOfflineSyncQueueRepository, OfflineSyncQueueReposito
 builder.Services.AddScoped<IOfflineSyncCommandService, OfflineSyncCommandService>();
 builder.Services.AddScoped<IPrescriptionCreatedEventHandler, PrescriptionCreatedEventHandler>();
 builder.Services.AddScoped<IAppointmentScheduledEventHandler, AppointmentScheduledEventHandler>();
+builder.Services.AddScoped<IMedicationCancelledEventHandler, MedicationCancelledEventHandler>();
+builder.Services.AddScoped<IMedicationUpdatedEventHandler, MedicationUpdatedEventHandler>();
 builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
 builder.Services.AddHostedService<AppointmentScheduledConsumer>();
+builder.Services.AddHostedService<MedicationEventsConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
+builder.Services.Configure<AzureBlobOptions>(
+    builder.Configuration.GetSection(AzureBlobOptions.SectionName));
+builder.Services.AddSingleton<IBlobStorageService, AzureBlobStorageService>();
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 100 * 1024 * 1024;
+});
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -61,6 +118,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<FollowUpDbContext>();
     db.Database.Migrate(); 
 }
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.Run();

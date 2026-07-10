@@ -3,10 +3,12 @@ using MediTrack.FollowUpService.API.Domain.Model.Queries;
 using MediTrack.FollowUpService.API.Interfaces.REST.Resources;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace MediTrack.FollowUpService.API.Interfaces.REST.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/v1/stock")]
 public class StockController : ControllerBase
 {

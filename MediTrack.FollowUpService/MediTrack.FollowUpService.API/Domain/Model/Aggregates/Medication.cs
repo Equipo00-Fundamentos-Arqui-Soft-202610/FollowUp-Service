@@ -37,7 +37,7 @@ public class Medication
         StockCount = newCount;
     }
 
-    public bool IsActive => EndDate == null || EndDate > DateTime.Now;
+    public bool IsActive => EndDate == null || EndDate > DateTime.UtcNow;
 
     public static Medication CreateFromEvent(int id, int patientId, string name, string dose,
         int frequencyHours, DateTime startDate, DateTime? endDate, int stockCount, int stockAlertThreshold)

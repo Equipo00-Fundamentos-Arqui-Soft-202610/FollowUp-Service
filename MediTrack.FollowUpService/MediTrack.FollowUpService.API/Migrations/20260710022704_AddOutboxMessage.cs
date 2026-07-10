@@ -15,7 +15,7 @@ namespace MediTrack.FollowUpService.API.Migrations
                 name: "outbox_message",
                 columns: table => new
                 {
-                    Id = table.Column<Guid>(type: "char(36)", nullable: false),
+                    Id = table.Column<byte[]>(type: "binary(16)", nullable: false),
                     EventType = table.Column<string>(type: "varchar(100)", maxLength: 100, nullable: false),
                     Payload = table.Column<string>(type: "json", nullable: false),
                     OccurredAtUtc = table.Column<DateTime>(type: "datetime(6)", nullable: false),

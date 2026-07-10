@@ -2,6 +2,7 @@ using MediTrack.FollowUpService.API.Application.OutboundEvents;
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Domain.Model.Aggregates;
 using MediTrack.FollowUpService.API.Domain.Model.Commands;
+using MediTrack.FollowUpService.API.Domain.Model.ValueObjects;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
@@ -30,8 +31,12 @@ public class MedicationComplianceCommandService : IMedicationComplianceCommandSe
 
     public async Task<MedicationCompliance> HandleAsync(RecordComplianceCommand command)
     {
-        // Validate that status is either "taken" or "skipped"
-        if (command.Status != "taken" && command.Status != "skipped")
+        // Este endpoint (registro directo, sin evidencia) sigue reservado a
+        // "taken"/"skipped": la validación real de valores permitidos vive en
+        // ComplianceStatus.From (evita la duplicación que existía aquí).
+        // Los estados del flujo de video (PendingValidation/Approved/Rejected)
+        // se manejan por su propio endpoint en ComplianceVideoController.
+        if (command.Status != ComplianceStatus.Taken.Value && command.Status != ComplianceStatus.Skipped.Value)
             throw new ArgumentException("Status must be either 'taken' or 'skipped'");
 
         // Validate that DoseSchedule exists and load Medication
@@ -90,11 +95,7 @@ public class MedicationComplianceCommandService : IMedicationComplianceCommandSe
                 new CumplimientoRegistradoEvent
                 {
                     PatientId = compliance.PatientId,
-                    // Reminder-Service crea/busca recordatorios por MedicationId, no por
-                    // DoseScheduleId (un medicamento puede tener varios horarios) — usar
-                    // el id del schedule acá nunca matcheaba el recordatorio correcto.
-                    EntityId = doseSchedule.MedicationId,
-                    OccurrenceDateUtc = compliance.OfflineRecordedAt ?? compliance.RecordedAt
+                    EntityId = compliance.DoseScheduleId
                 });
 
             await _eventPublisher.PublishAsync(

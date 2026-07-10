@@ -142,6 +142,15 @@ namespace MediTrack.FollowUpService.API.Migrations
                         .HasColumnType("datetime(6)")
                         .HasColumnName("recorded_at");
 
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<DateTime?>("ScheduledAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("scheduled_at");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -153,6 +162,23 @@ namespace MediTrack.FollowUpService.API.Migrations
                         .HasColumnType("tinyint(1)")
                         .HasDefaultValue(true)
                         .HasColumnName("synced");
+
+                    b.Property<string>("TemporaryVideoPath")
+                        .HasMaxLength(260)
+                        .HasColumnType("varchar(260)")
+                        .HasColumnName("temporary_video_path");
+
+                    b.Property<DateTime?>("ValidatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("validated_at");
+
+                    b.Property<int?>("ValidatorId")
+                        .HasColumnType("int")
+                        .HasColumnName("validator_id");
+
+                    b.Property<DateTime?>("VideoExpiresAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("video_expires_at");
 
                     b.Property<string>("VideoUrl")
                         .HasColumnType("longtext")
@@ -232,86 +258,6 @@ namespace MediTrack.FollowUpService.API.Migrations
                     b.HasIndex("MedicationId");
 
                     b.ToTable("dose_schedules", (string)null);
-                });
-
-            modelBuilder.Entity("MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.IdempotencyRecord", b =>
-                {
-                    b.Property<string>("Key")
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Endpoint")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("varchar(200)");
-
-                    b.Property<string>("ResponseBody")
-                        .IsRequired()
-                        .HasColumnType("json");
-
-                    b.Property<int>("ResponseStatusCode")
-                        .HasColumnType("int");
-
-                    b.HasKey("Key");
-
-                    b.ToTable("idempotency_records", (string)null);
-                });
-
-            modelBuilder.Entity("MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.OutboxMessage", b =>
-                {
-                    b.Property<byte[]>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("binary(16)");
-
-                    b.Property<int>("Attempts")
-                        .HasColumnType("int");
-
-                    b.Property<string>("EventType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<string>("LastError")
-                        .HasMaxLength(500)
-                        .HasColumnType("varchar(500)");
-
-                    b.Property<DateTime>("OccurredAtUtc")
-                        .HasColumnType("datetime(6)");
-
-                    b.Property<string>("Payload")
-                        .IsRequired()
-                        .HasColumnType("json");
-
-                    b.Property<DateTime?>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ProcessedAtUtc");
-
-                    b.ToTable("outbox_message", (string)null);
-                });
-
-            modelBuilder.Entity("MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.ProcessedEvent", b =>
-                {
-                    b.Property<byte[]>("EventId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("binary(16)");
-
-                    b.Property<string>("EventType")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("varchar(100)");
-
-                    b.Property<DateTime>("ProcessedAtUtc")
-                        .HasColumnType("datetime(6)");
-
-                    b.HasKey("EventId");
-
-                    b.ToTable("processed_events", (string)null);
                 });
 
             modelBuilder.Entity("MediTrack.FollowUpService.API.Domain.Model.Aggregates.MedicationCompliance", b =>

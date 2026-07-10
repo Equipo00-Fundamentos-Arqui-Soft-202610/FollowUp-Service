@@ -221,6 +221,10 @@ public class FollowUpDbContext : DbContext
             entity.ToTable("outbox_message");
             entity.HasKey(m => m.Id);
 
+            entity.Property(m => m.Id)
+                .HasConversion(g => g.ToByteArray(), b => new Guid(b))
+                .HasColumnType("binary(16)");
+
             entity.Property(m => m.EventType).HasMaxLength(100).IsRequired();
             entity.Property(m => m.Payload).HasColumnType("json").IsRequired();
             entity.Property(m => m.OccurredAtUtc).IsRequired();

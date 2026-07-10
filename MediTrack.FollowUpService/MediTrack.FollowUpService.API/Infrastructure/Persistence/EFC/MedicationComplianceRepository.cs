@@ -28,6 +28,7 @@ public class MedicationComplianceRepository : IMedicationComplianceRepository
         return await _context.MedicationCompliances
             .Where(mc => mc.PatientId == patientId)
             .Include(mc => mc.DoseSchedule)
+            .ThenInclude(ds => ds.Medication)
             .OrderByDescending(mc => mc.RecordedAt)
             .ToListAsync();
     }
@@ -94,5 +95,14 @@ public class MedicationComplianceRepository : IMedicationComplianceRepository
     {
         var utc = DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc);
         return TimeZoneInfo.ConvertTimeFromUtc(utc, LimaTimeZone).Date;
+    }
+
+    public async Task<ICollection<MedicationCompliance>> FindAllAsync()
+    {
+        return await _context.MedicationCompliances
+            .Include(mc => mc.DoseSchedule)
+            .ThenInclude(ds => ds.Medication)
+            .OrderByDescending(mc => mc.RecordedAt)
+            .ToListAsync();
     }
 }

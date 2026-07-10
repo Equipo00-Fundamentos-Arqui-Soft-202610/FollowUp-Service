@@ -98,9 +98,9 @@ builder.Services.AddHostedService<PrescriptionCreatedConsumer>();
 builder.Services.AddHostedService<AppointmentScheduledConsumer>();
 builder.Services.AddHostedService<MedicationEventsConsumer>();
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
-builder.Services.Configure<AzureBlobOptions>(
-    builder.Configuration.GetSection(AzureBlobOptions.SectionName));
-builder.Services.AddSingleton<IBlobStorageService, AzureBlobStorageService>();
+builder.Services.Configure<R2BlobOptions>(
+    builder.Configuration.GetSection(R2BlobOptions.SectionName));
+builder.Services.AddSingleton<IBlobStorageService, R2BlobStorageService>();
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = 100 * 1024 * 1024;

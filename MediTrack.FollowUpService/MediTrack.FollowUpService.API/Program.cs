@@ -9,6 +9,7 @@ using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Configuration;
+using MediTrack.FollowUpService.API.Infrastructure.Security;
 using MediTrack.FollowUpService.API.Interfaces.REST.Transform;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
@@ -29,10 +30,17 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// JWT authentication
-var jwtSection = builder.Configuration.GetSection("Jwt");
-var signingKey = jwtSection["Key"]
-    ?? throw new InvalidOperationException("Falta la clave de firma JWT en 'Jwt:Key'.");
+// JWT authentication -- valores reales vía user-secrets en desarrollo, vía
+// variables de entorno en producción. Nunca en appsettings.json (ver README).
+builder.Services.AddOptions<JwtOptions>()
+    .Bind(builder.Configuration.GetSection(JwtOptions.SectionName))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Key), "Jwt:Key es obligatorio")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Issuer), "Jwt:Issuer es obligatorio")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Audience), "Jwt:Audience es obligatorio")
+    .ValidateOnStart();
+
+var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
+    ?? throw new InvalidOperationException("Falta la sección 'Jwt' en la configuración.");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -40,12 +48,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuer = jwtSection["Issuer"],
+            ValidIssuer = jwtOptions.Issuer,
             ValidateAudience = true,
-            ValidAudience = jwtSection["Audience"],
+            ValidAudience = jwtOptions.Audience,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.Key)),
             ClockSkew = TimeSpan.FromSeconds(30)
         };
     });
@@ -72,7 +80,11 @@ builder.Services.AddScoped<IMedicationComplianceRepository, MedicationCompliance
 builder.Services.AddScoped<IMedicationComplianceCommandService, MedicationComplianceCommandService>();
 builder.Services.AddScoped<RecordComplianceCommandFromResourceAssembler>();
 builder.Services.AddScoped<MedicationComplianceResourceFromEntityAssembler>();
-builder.Services.AddSingleton<IEventPublisher, RabbitMqPublisher>();
+// Patrón Outbox: los eventos se persisten en la misma BD que el cambio de
+// dominio y se entregan a RabbitMQ en background (no se pierden si el broker
+// está caído justo al publicar).
+builder.Services.AddScoped<IEventPublisher, OutboxEventPublisher>();
+builder.Services.AddHostedService<OutboxDispatcherHostedService>();
 builder.Services.AddScoped<IAppointmentComplianceRepository, AppointmentComplianceRepository>();
 builder.Services.AddScoped<IAppointmentComplianceCommandService, AppointmentComplianceCommandService>();
 builder.Services.AddScoped<IAppointmentComplianceQueryService, AppointmentComplianceQueryService>();

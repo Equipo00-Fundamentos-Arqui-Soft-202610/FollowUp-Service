@@ -90,7 +90,11 @@ public class MedicationComplianceCommandService : IMedicationComplianceCommandSe
                 new CumplimientoRegistradoEvent
                 {
                     PatientId = compliance.PatientId,
-                    EntityId = compliance.DoseScheduleId
+                    // Reminder-Service crea/busca recordatorios por MedicationId, no por
+                    // DoseScheduleId (un medicamento puede tener varios horarios) — usar
+                    // el id del schedule acá nunca matcheaba el recordatorio correcto.
+                    EntityId = doseSchedule.MedicationId,
+                    OccurrenceDateUtc = compliance.OfflineRecordedAt ?? compliance.RecordedAt
                 });
 
             await _eventPublisher.PublishAsync(

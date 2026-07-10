@@ -7,6 +7,8 @@ namespace MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 
 public class MedicationComplianceRepository : IMedicationComplianceRepository
 {
+    private static readonly TimeZoneInfo LimaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("SA Pacific Standard Time");
+
     private readonly FollowUpDbContext _context;
 
     public MedicationComplianceRepository(FollowUpDbContext context)
@@ -58,5 +60,39 @@ public class MedicationComplianceRepository : IMedicationComplianceRepository
             _context.MedicationCompliances.Remove(compliance);
             await _context.SaveChangesAsync();
         }
+    }
+
+    public async Task<ICollection<MedicationCompliance>> FindPendingValidationAsync()
+    {
+        // Se filtra en memoria (no en SQL) con el VO ComplianceStatus, igual que ya
+        // hace NextPendingDoseQueryService — evita depender de que EF traduzca
+        // comparaciones sobre el value converter de Status.
+        var all = await _context.MedicationCompliances
+            .Include(mc => mc.DoseSchedule)
+            .ThenInclude(ds => ds.Medication)
+            .OrderBy(mc => mc.RecordedAt)
+            .ToListAsync();
+
+        return all.Where(mc => mc.Status.IsPendingValidation).ToList();
+    }
+
+    public async Task<MedicationCompliance?> FindTodayValidationAttemptAsync(int patientId, int doseScheduleId, DateTime today)
+    {
+        var candidates = await _context.MedicationCompliances
+            .Where(mc => mc.PatientId == patientId && mc.DoseScheduleId == doseScheduleId)
+            .OrderByDescending(mc => mc.RecordedAt)
+            .ToListAsync();
+
+        // `RecordedAt` se guarda en UTC; "today" se calcula en hora Lima (mismo
+        // criterio que el resto del servicio, ver AdherenceHistoryQueryService),
+        // así que hay que convertir antes de comparar por fecha calendario.
+        return candidates.FirstOrDefault(mc =>
+            ToLimaDate(mc.RecordedAt) == today.Date && (mc.Status.IsPendingValidation || mc.Status.IsRejected));
+    }
+
+    private static DateTime ToLimaDate(DateTime utcDateTime)
+    {
+        var utc = DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc);
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, LimaTimeZone).Date;
     }
 }

@@ -142,6 +142,15 @@ namespace MediTrack.FollowUpService.API.Migrations
                         .HasColumnType("datetime(6)")
                         .HasColumnName("recorded_at");
 
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("varchar(500)")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<DateTime?>("ScheduledAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("scheduled_at");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(50)
@@ -153,6 +162,23 @@ namespace MediTrack.FollowUpService.API.Migrations
                         .HasColumnType("tinyint(1)")
                         .HasDefaultValue(true)
                         .HasColumnName("synced");
+
+                    b.Property<string>("TemporaryVideoPath")
+                        .HasMaxLength(260)
+                        .HasColumnType("varchar(260)")
+                        .HasColumnName("temporary_video_path");
+
+                    b.Property<DateTime?>("ValidatedAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("validated_at");
+
+                    b.Property<int?>("ValidatorId")
+                        .HasColumnType("int")
+                        .HasColumnName("validator_id");
+
+                    b.Property<DateTime?>("VideoExpiresAt")
+                        .HasColumnType("datetime(6)")
+                        .HasColumnName("video_expires_at");
 
                     b.Property<string>("VideoUrl")
                         .HasColumnType("longtext")

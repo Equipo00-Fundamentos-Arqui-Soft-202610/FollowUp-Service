@@ -135,6 +135,26 @@ public class FollowUpDbContext : DbContext
             entity.Property(e => e.OfflineRecordedAt)
                 .HasColumnName("offline_recorded_at");
 
+            entity.Property(e => e.ScheduledAt)
+                .HasColumnName("scheduled_at");
+
+            entity.Property(e => e.ValidatedAt)
+                .HasColumnName("validated_at");
+
+            entity.Property(e => e.ValidatorId)
+                .HasColumnName("validator_id");
+
+            entity.Property(e => e.RejectionReason)
+                .HasColumnName("rejection_reason")
+                .HasMaxLength(500);
+
+            entity.Property(e => e.TemporaryVideoPath)
+                .HasColumnName("temporary_video_path")
+                .HasMaxLength(260);
+
+            entity.Property(e => e.VideoExpiresAt)
+                .HasColumnName("video_expires_at");
+
             entity.HasOne(e => e.DoseSchedule)
                 .WithMany()
                 .HasForeignKey(e => e.DoseScheduleId)

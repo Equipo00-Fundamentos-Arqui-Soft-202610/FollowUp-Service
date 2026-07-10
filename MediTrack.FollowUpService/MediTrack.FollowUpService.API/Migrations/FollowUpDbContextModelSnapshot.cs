@@ -236,7 +236,7 @@ namespace MediTrack.FollowUpService.API.Migrations
 
             modelBuilder.Entity("MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.OutboxMessage", b =>
                 {
-                    b.Property<byte[]>("Id")
+                    b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("binary(16)");
 

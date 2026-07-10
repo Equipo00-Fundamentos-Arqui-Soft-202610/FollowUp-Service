@@ -241,7 +241,7 @@ namespace MediTrack.FollowUpService.API.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("char(36)");
+                        .HasColumnType("binary(16)");
 
                     b.Property<int>("Attempts")
                         .HasColumnType("int");

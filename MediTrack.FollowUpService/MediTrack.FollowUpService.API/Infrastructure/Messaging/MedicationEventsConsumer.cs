@@ -45,8 +45,29 @@ public class MedicationEventsConsumer : BackgroundService
 
         _channel.ExchangeDeclare(_options.ExchangeName, ExchangeType.Topic, durable: true);
 
+        var dlxName = "followup-service.dlx";
+        var dlqName = "followup-service.dlq";
+        _channel.ExchangeDeclare(dlxName, ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare(dlqName, durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind(dlqName, dlxName, routingKey: "");
+
         var queueName = "followup-service.medication-events";
-        _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false);
+        var queueArgs = new Dictionary<string, object> { { "x-dead-letter-exchange", dlxName } };
+        try
+        {
+            _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false, arguments: queueArgs);
+        }
+        catch (RabbitMQ.Client.Exceptions.OperationInterruptedException)
+        {
+            _logger.LogWarning("La cola {QueueName} existía con argumentos distintos; se recrea con soporte de DLQ.", queueName);
+            _channel = _connection!.CreateModel();
+            _channel.ExchangeDeclare(_options.ExchangeName, ExchangeType.Topic, durable: true);
+            _channel.ExchangeDeclare(dlxName, ExchangeType.Fanout, durable: true);
+            _channel.QueueDeclare(dlqName, durable: true, exclusive: false, autoDelete: false);
+            _channel.QueueBind(dlqName, dlxName, routingKey: "");
+            _channel.QueueDelete(queueName);
+            _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false, arguments: queueArgs);
+        }
         _channel.QueueBind(queueName, _options.ExchangeName, routingKey: "MedicationCancelled");
         _channel.QueueBind(queueName, _options.ExchangeName, routingKey: "MedicationUpdated");
 
@@ -117,8 +138,16 @@ public class MedicationEventsConsumer : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to process medication event with RoutingKey {RoutingKey}", ea.RoutingKey);
-                _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: true);
+                if (ea.Redelivered)
+                {
+                    _logger.LogError(ex, "Error persistente procesando evento; se envía a DLQ.");
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                }
+                else
+                {
+                    _logger.LogWarning(ex, "Error procesando evento; se reintenta una vez.");
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: true);
+                }
             }
         };
 

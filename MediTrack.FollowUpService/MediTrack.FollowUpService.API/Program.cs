@@ -4,7 +4,10 @@ using MediTrack.FollowUpService.API.Application.Internal.EventHandlers;
 using MediTrack.FollowUpService.API.Application.Internal.QueryServices;
 using MediTrack.FollowUpService.API.Domain.Model;
 using MediTrack.FollowUpService.API.Infrastructure.BlobStorage;
+using MediTrack.FollowUpService.API.Infrastructure.Cleanup;
+using MediTrack.FollowUpService.API.Infrastructure.ExternalServices;
 using MediTrack.FollowUpService.API.Infrastructure.Messaging;
+using MediTrack.FollowUpService.API.Infrastructure.TemporaryStorage;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC;
 using MediTrack.FollowUpService.API.Infrastructure.Persistence.EFC.Repositories;
@@ -70,6 +73,18 @@ builder.Services.AddDbContext<FollowUpDbContext>(options =>
 builder.Services.AddScoped<IMedicationRepository, MedicationRepository>();
 builder.Services.AddScoped<IMedicationQueryService, MedicationQueryService>();
 builder.Services.AddScoped<INextPendingDoseQueryService, NextPendingDoseQueryService>();
+
+// Respaldo de sincronización next-dose/medications (ver docs/next-dose-sync-fix.md):
+// si la réplica local de Medication/DoseSchedule está vacía para un paciente
+// (evento RabbitMQ "PrescriptionCreated" perdido), se completa consultando el
+// endpoint público existente de Treatment-Service.
+builder.Services.AddHttpClient<ITreatmentMedicationsClient, TreatmentMedicationsClient>(client =>
+{
+    var treatmentBaseUrl = builder.Configuration["TreatmentService:BaseUrl"] ?? "http://localhost:5162";
+    client.BaseAddress = new Uri(treatmentBaseUrl);
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
+builder.Services.AddScoped<IMedicationReplicaSyncService, MedicationReplicaSyncService>();
 builder.Services.AddScoped<IAdherenceHistoryQueryService, AdherenceHistoryQueryService>();
 builder.Services.AddScoped<ILowStockMedicationQueryService, LowStockMedicationQueryService>();
 builder.Services.AddScoped<MedicationResourceFromEntityAssembler>();
@@ -101,6 +116,12 @@ builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("Ra
 builder.Services.Configure<R2BlobOptions>(
     builder.Configuration.GetSection(R2BlobOptions.SectionName));
 builder.Services.AddSingleton<IBlobStorageService, R2BlobStorageService>();
+
+// Flujo de validación de evidencia en video (MediTrack AI Validator — Prototype):
+// almacenamiento temporal privado + limpieza periódica de videos vencidos (>24h).
+builder.Services.AddSingleton<ITemporaryVideoStorage, LocalTemporaryVideoStorage>();
+builder.Services.AddHostedService<StaleComplianceVideoCleanupService>();
+
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = 100 * 1024 * 1024;
@@ -121,4 +142,5 @@ using (var scope = app.Services.CreateScope())
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+// no-op: commit de prueba para verificar auto-deploy de Render
 app.Run();

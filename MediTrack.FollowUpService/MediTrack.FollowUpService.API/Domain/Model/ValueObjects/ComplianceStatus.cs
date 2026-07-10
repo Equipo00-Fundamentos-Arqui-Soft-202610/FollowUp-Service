@@ -5,10 +5,19 @@ public class ComplianceStatus
     public static readonly ComplianceStatus Taken = new("taken");
     public static readonly ComplianceStatus Skipped = new("skipped");
 
+    /// Flujo de validación de evidencia en video (MediTrack AI Validator — Prototype):
+    /// el paciente sube video -> PendingValidation -> el validador humano decide -> Approved/Rejected.
+    public static readonly ComplianceStatus PendingValidation = new("pendingvalidation");
+    public static readonly ComplianceStatus Approved = new("approved");
+    public static readonly ComplianceStatus Rejected = new("rejected");
+
     private static readonly Dictionary<string, ComplianceStatus> _validStatuses = new()
     {
         { "taken", Taken },
-        { "skipped", Skipped }
+        { "skipped", Skipped },
+        { "pendingvalidation", PendingValidation },
+        { "approved", Approved },
+        { "rejected", Rejected }
     };
 
     public string Value { get; }
@@ -25,13 +34,20 @@ public class ComplianceStatus
 
         var lowerValue = value.ToLowerInvariant();
         if (!_validStatuses.TryGetValue(lowerValue, out var status))
-            throw new ArgumentException($"Invalid ComplianceStatus '{value}'. Valid values are: 'taken', 'skipped'", nameof(value));
+            throw new ArgumentException(
+                $"Invalid ComplianceStatus '{value}'. Valid values are: 'taken', 'skipped', 'pendingvalidation', 'approved', 'rejected'",
+                nameof(value));
 
         return status;
     }
 
-    public bool IsTaken => this.Value == "taken";
-    public bool IsSkipped => this.Value == "skipped";
+    // "Taken" (registro directo legado) y "Approved" (validado por evidencia) cuentan
+    // ambos como dosis cumplida para adherencia y para excluir la dosis de "next dose".
+    public bool IsTaken => Value == "taken" || Value == "approved";
+    public bool IsSkipped => Value == "skipped";
+    public bool IsPendingValidation => Value == "pendingvalidation";
+    public bool IsApproved => Value == "approved";
+    public bool IsRejected => Value == "rejected";
 
     public override bool Equals(object? obj)
     {
@@ -54,4 +70,3 @@ public class ComplianceStatus
     // Implicit conversion from string for convenience (factory method preferred)
     public static implicit operator ComplianceStatus(string value) => From(value);
 }
-

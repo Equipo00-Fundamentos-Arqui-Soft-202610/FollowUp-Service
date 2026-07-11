@@ -122,6 +122,11 @@ builder.Services.AddSingleton<IBlobStorageService, R2BlobStorageService>();
 builder.Services.AddSingleton<ITemporaryVideoStorage, LocalTemporaryVideoStorage>();
 builder.Services.AddHostedService<StaleComplianceVideoCleanupService>();
 
+// Cierra dosis vencidas (T+10 sin ningún cumplimiento) como "skipped",
+// garantizando el registro incluso con MediTrack-Mobile completamente
+// cerrado — ver StaleDoseExpirationService para el detalle de la regla.
+builder.Services.AddHostedService<StaleDoseExpirationService>();
+
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = 100 * 1024 * 1024;

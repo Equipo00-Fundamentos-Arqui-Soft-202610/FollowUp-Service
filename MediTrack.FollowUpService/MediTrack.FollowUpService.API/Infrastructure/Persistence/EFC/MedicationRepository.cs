@@ -31,6 +31,18 @@ public class MedicationRepository : IMedicationRepository
             .FirstOrDefaultAsync(m => m.Id == medicationId);
     }
 
+    public async Task<ICollection<Medication>> FindAllActiveAsync()
+    {
+        // Se filtra por EndDate directamente (no por `Medication.IsActive`,
+        // una propiedad calculada en C# que EF Core no puede traducir a SQL
+        // de forma fiable) — mismo criterio que expresa esa propiedad.
+        var now = DateTime.UtcNow;
+        return await _context.Medications
+            .Where(m => m.EndDate == null || m.EndDate > now)
+            .Include(m => m.Schedules)
+            .ToListAsync();
+    }
+
     public async Task AddAsync(Medication medication)
     {
         await _context.Medications.AddAsync(medication);

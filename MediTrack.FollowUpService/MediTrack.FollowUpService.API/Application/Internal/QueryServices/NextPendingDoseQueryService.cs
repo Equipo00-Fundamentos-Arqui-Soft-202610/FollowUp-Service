@@ -84,17 +84,18 @@ public class NextPendingDoseQueryService : INextPendingDoseQueryService
             .Where(c => c.RecordedAt.Date == today)
             .ToList();
 
-        // Solo se excluye la dosis si ya está resuelta como cumplida (legado "taken"
-        // o validada "approved" — cubierto por IsTaken). Si hay un intento
-        // "PendingValidation" o "Rejected" de hoy, la dosis SIGUE devolviéndose como
-        // "next dose" (para que el cliente muestre "en validación"/"rechazada" y no
-        // pueda re-enviar otra dosis distinta), solo que ya no se ofrece como
-        // disponible para un envío nuevo sin evidencia.
+        // Se excluye la dosis si ya está resuelta como cumplida (legado "taken" o
+        // validada "approved" — cubierto por IsTaken) o si ya quedó registrada
+        // como "skipped" (no tomada, cierre definitivo del ciclo de recordatorios).
+        // Si hay un intento "PendingValidation" o "Rejected" de hoy, la dosis SIGUE
+        // devolviéndose como "next dose" (para que el cliente muestre "en
+        // validación"/"rechazada" y no pueda re-enviar otra dosis distinta), solo
+        // que ya no se ofrece como disponible para un envío nuevo sin evidencia.
         var nextPendingSchedule = activeDoseSchedules
             .Where(s =>
             {
                 var hasResolvedCompliance = todayCompliances.Any(c =>
-                    c.DoseScheduleId == s.Id && c.Status.IsTaken);
+                    c.DoseScheduleId == s.Id && (c.Status.IsTaken || c.Status.IsSkipped));
                 return !hasResolvedCompliance;
             })
             .OrderBy(s => s.ScheduledTime.Value > now.TimeOfDay ? 0 : 1)
@@ -104,7 +105,7 @@ public class NextPendingDoseQueryService : INextPendingDoseQueryService
         if (nextPendingSchedule == null)
         {
             _logger.LogWarning(
-                "[next-dose] patientId={PatientId}: todos los horarios de hoy ya están resueltos (taken/approved), devolviendo null (404).",
+                "[next-dose] patientId={PatientId}: todos los horarios de hoy ya están resueltos (taken/approved/skipped), devolviendo null (404).",
                 query.PatientId);
             return null;
         }
